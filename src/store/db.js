@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS todos (
   created_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS todos_dedup ON todos(meeting_id, COALESCE(assignee, ''), task);
+CREATE INDEX IF NOT EXISTS utterances_meeting ON utterances(meeting_id);
+CREATE INDEX IF NOT EXISTS todos_meeting ON todos(meeting_id);
+CREATE INDEX IF NOT EXISTS todos_guild ON todos(guild_id);
+CREATE INDEX IF NOT EXISTS meetings_guild ON meetings(guild_id);
 `;
 
 export function openDb(path) {

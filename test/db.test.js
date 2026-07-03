@@ -63,6 +63,16 @@ test('searchUtterances does not throw on FTS operator characters', () => {
   assert.equal(db.searchUtterances('g', 'rocket').length, 1);
 });
 
+test('openDb creates hot-path indexes on utterances/todos/meetings', () => {
+  const db = freshDb();
+  const names = db.sql.prepare(
+    `SELECT name FROM sqlite_master WHERE type = 'index'`
+  ).all().map((r) => r.name);
+  for (const idx of ['utterances_meeting', 'todos_meeting', 'todos_guild', 'meetings_guild']) {
+    assert.ok(names.includes(idx), `expected index ${idx} to exist`);
+  }
+});
+
 test('getSummary does not leak raw json columns', () => {
   const db = openDb(':memory:');
   const id = db.createMeeting({ guildId: 'g', channelId: 'c', channelName: 'x', startedAt: 't' });
