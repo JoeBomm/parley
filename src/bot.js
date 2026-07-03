@@ -20,10 +20,18 @@ import { postNotes } from './delivery/post.js';
 export function startBot({ db, audioRoot }) {
   validateEnv(); // throws with a clear message if token/client id are missing
 
+  // Verbose voice-lifecycle logging (gateway raw packets, [vSU]/[voice]/[join]
+  // traces) is noisy in production; gate it behind DEBUG_VOICE=1. Errors,
+  // warnings, and the meaningful lifecycle lines (Started/Stopping, Logged in)
+  // stay on unconditionally.
+  const DEBUG_VOICE = process.env.DEBUG_VOICE === '1';
+  const debugLog = (...args) => { if (DEBUG_VOICE) console.log(...args); };
+
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
   });
   client.on('raw', (packet) => {
+    if (!DEBUG_VOICE) return;
     if (packet.t === 'VOICE_STATE_UPDATE' || packet.t === 'VOICE_SERVER_UPDATE') {
       console.log(`[gateway] ${packet.t}:`, JSON.stringify(packet.d).substring(0, 200));
     }
@@ -99,7 +107,7 @@ export function startBot({ db, audioRoot }) {
   async function joinAndStart(channel) {
     const joinKey = `${channel.guild.id}:${channel.id}`;
     if (joiningInProgress.has(joinKey)) {
-      console.log(`[join] Skipping duplicate join for ${joinKey}`);
+      debugLog(`[join] Skipping duplicate join for ${joinKey}`);
       return;
     }
     joiningInProgress.add(joinKey);
@@ -111,21 +119,21 @@ export function startBot({ db, audioRoot }) {
       if (!permCheck.speak) {
         throw new Error('Bot lacks **Speak** permission in this voice channel. Check server roles / channel overrides.');
       }
-      console.log(`[voice] joinVoiceChannel guild=${channel.guild.id} channel=${channel.id}`);
+      debugLog(`[voice] joinVoiceChannel guild=${channel.guild.id} channel=${channel.id}`);
       const connection = joinVoiceChannel({
         channelId: channel.id, guildId: channel.guild.id,
         adapterCreator: channel.guild.voiceAdapterCreator, selfDeaf: false, selfMute: true,
       });
-      console.log(`[voice] connection initial state: ${connection.state.status}`);
+      debugLog(`[voice] connection initial state: ${connection.state.status}`);
       connection.on('stateChange', (oldState, newState) => {
-        console.log(`[voice] stateChange: ${oldState.status} -> ${newState.status}`);
+        debugLog(`[voice] stateChange: ${oldState.status} -> ${newState.status}`);
       });
       connection.on('error', (err) => {
         console.error(`[voice] connection error:`, err.message);
       });
       try {
         await entersState(connection, VoiceConnectionStatus.Ready, 25_000);
-        console.log(`[voice] connection reached Ready`);
+        debugLog(`[voice] connection reached Ready`);
       } catch (err) {
         console.error(`[voice] entersState failed after 25s. Final state: ${connection.state.status}`);
         connection.destroy();
@@ -153,7 +161,7 @@ export function startBot({ db, audioRoot }) {
             entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
             entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
           ]);
-          console.log(`[voice] Disconnected looks recoverable for ${channel.guild.id}:${channel.id} (reconnecting)`);
+          debugLog(`[voice] Disconnected looks recoverable for ${channel.guild.id}:${channel.id} (reconnecting)`);
         } catch {
           console.warn(`[voice] Disconnected did not recover within 5s for ${channel.guild.id}:${channel.id}`);
           if (connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
@@ -230,12 +238,12 @@ export function startBot({ db, audioRoot }) {
     const cfg = getGuildConfig(db, guild.id);
     const connected = manager.isActive(guild.id, channel.id);
     const count = humanCount(channel);
-    console.log(`[vSU] guild=${guild.id} channel=${channel.id} user=${newState.id} old=${oldState.channelId} new=${newState.channelId} humans=${count} connected=${connected} autoJoin=${cfg.autoJoin}`);
+    debugLog(`[vSU] guild=${guild.id} channel=${channel.id} user=${newState.id} old=${oldState.channelId} new=${newState.channelId} humans=${count} connected=${connected} autoJoin=${cfg.autoJoin}`);
     if (shouldAutoJoin({ humanCount: count, autoJoin: cfg.autoJoin, connected })) {
-      console.log(`[vSU] auto-join triggered for ${channel.id}`);
+      debugLog(`[vSU] auto-join triggered for ${channel.id}`);
       await joinAndStart(channel).catch((e) => console.error('auto-join failed:', e.message));
     } else if (shouldAutoLeave({ humanCount: count, connected })) {
-      console.log(`[vSU] auto-leave triggered for ${channel.id}`);
+      debugLog(`[vSU] auto-leave triggered for ${channel.id}`);
       await stopAndLeave(guild.id, channel.id).catch((e) => console.error('auto-leave failed:', e.message));
     }
   });

@@ -13,6 +13,7 @@ export async function processMeeting(db, meetingId, opts) {
 
   let utterances;
   let failures = [];
+  const transcribeStart = Date.now();
   try {
     const result = await transcribe(opts.tracks, opts.cfg);
     // transcribeTracks returns { utterances, failures }, but opts.transcribe
@@ -29,6 +30,7 @@ export async function processMeeting(db, meetingId, opts) {
     err.userMessage = `Transcription failed — the STT sidecar may be down or unreachable. (${err.message})`;
     throw err;
   }
+  const transcribeMs = Date.now() - transcribeStart;
 
   // A2: one or more tracks failing STT must not sink a meeting that
   // otherwise has usable transcript — only bail out when every track
@@ -63,6 +65,7 @@ export async function processMeeting(db, meetingId, opts) {
   };
 
   let notes;
+  const summarizeStart = Date.now();
   try {
     notes = await summarizer.summarize(transcript, meta);
   } catch (err) {
@@ -70,9 +73,13 @@ export async function processMeeting(db, meetingId, opts) {
     err.userMessage = describeSummarizerError(err, opts.cfg.summarizerProvider);
     throw err;
   }
+  const summarizeMs = Date.now() - summarizeStart;
+
+  const timings = { transcribeMs, summarizeMs, tracks: opts.tracks.length };
+  console.log(`[pipeline] meeting ${meetingId}: transcribe ${transcribeMs}ms (${opts.tracks.length} tracks), summarize ${summarizeMs}ms`);
 
   const modelUsed = `${opts.cfg.summarizerProvider}:${opts.cfg.summarizerModel || ''}`;
-  db.saveSummary(meetingId, notes, talktime, modelUsed);
+  db.saveSummary(meetingId, notes, talktime, modelUsed, new Date().toISOString(), timings);
   db.seedTodos(meetingId, meeting.guild_id, notes.actionItems || []);
   db.setMeetingStatus(meetingId, 'done', new Date().toISOString());
 

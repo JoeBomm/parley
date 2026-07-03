@@ -89,3 +89,24 @@ test('processMeeting marks summary_failed when summarizer throws', async () => {
   assert.equal(db.getMeeting(id).status, 'summary_failed');
   assert.equal(db.listUtterances(id).length, 1); // transcript still saved
 });
+
+test('processMeeting measures and stores per-stage timings on the summary row', async () => {
+  const { db, id } = seed();
+  await processMeeting(db, id, {
+    tracks,
+    cfg: { summarizerProvider: 'fake' },
+    summarizer: new FakeSummarizer(),
+    transcribe: async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      return { utterances: [{ userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'hello team' }], failures: [] };
+    },
+    deliver: async () => {},
+  });
+  const summary = db.getSummary(id);
+  assert.ok(summary.timings);
+  assert.equal(typeof summary.timings.transcribeMs, 'number');
+  assert.equal(typeof summary.timings.summarizeMs, 'number');
+  assert.ok(summary.timings.transcribeMs >= 0);
+  assert.ok(summary.timings.summarizeMs >= 0);
+  assert.equal(summary.timings.tracks, 1);
+});

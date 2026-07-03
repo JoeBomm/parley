@@ -80,6 +80,12 @@ export function openDb(path) {
   if (!cols.some((c) => c.name === 'stt_model')) {
     sql.exec(`ALTER TABLE guild_config ADD COLUMN stt_model TEXT`);
   }
+  // Migration: add per-stage timing metrics to dbs created before this column
+  // existed (Measurement section of the speed plan).
+  const summaryCols = sql.prepare(`PRAGMA table_info(summaries)`).all();
+  if (!summaryCols.some((c) => c.name === 'timings_json')) {
+    sql.exec(`ALTER TABLE summaries ADD COLUMN timings_json TEXT`);
+  }
 
   return {
     sql,
@@ -180,17 +186,24 @@ export function openDb(path) {
          ORDER BY u.meeting_id DESC LIMIT 50`
       ).all(guildId, safe);
     },
-    saveSummary(meetingId, notes, talktime, modelUsed, createdAt = new Date().toISOString()) {
+    // `createdAt` and `timings` are both optional and backward-compatible:
+    // existing callers (retry.js/api.js pass 4 args; a couple of scripts/tests
+    // pass a 5th createdAt override for backfilled data) keep working
+    // unchanged. `timings` (transcribeMs/summarizeMs/tracks/audioMs) is a new,
+    // purely additive 6th arg from the orchestrator's per-stage measurement.
+    saveSummary(meetingId, notes, talktime, modelUsed, createdAt = new Date().toISOString(), timings = null) {
       sql.prepare(
-        `INSERT OR REPLACE INTO summaries (meeting_id, notes_json, talktime_json, model_used, created_at)
-         VALUES (?, ?, ?, ?, ?)`
-      ).run(meetingId, JSON.stringify(notes), JSON.stringify(talktime), modelUsed, createdAt);
+        `INSERT OR REPLACE INTO summaries (meeting_id, notes_json, talktime_json, model_used, timings_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(meetingId, JSON.stringify(notes), JSON.stringify(talktime), modelUsed, timings ? JSON.stringify(timings) : null, createdAt);
     },
     getSummary(meetingId) {
       const row = sql.prepare(`SELECT * FROM summaries WHERE meeting_id = ?`).get(meetingId);
       if (!row) return null;
-      const { notes_json, talktime_json, ...rest } = row;
-      return { ...rest, notes: JSON.parse(notes_json), talktime: JSON.parse(talktime_json) };
+      const { notes_json, talktime_json, timings_json, ...rest } = row;
+      let timings = null;
+      try { if (timings_json) timings = JSON.parse(timings_json); } catch { /* null-safe */ }
+      return { ...rest, notes: JSON.parse(notes_json), talktime: JSON.parse(talktime_json), timings };
     },
     seedTodos(meetingId, guildId, actionItems, createdAt = new Date().toISOString()) {
       const stmt = sql.prepare(

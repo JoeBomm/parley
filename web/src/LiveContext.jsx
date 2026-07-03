@@ -8,7 +8,9 @@ export const useLive = () => useContext(Ctx);
 // Polls the bot's in-progress recordings for the active guild. Live recording
 // state lives only in the bot's memory (transcription runs at meeting end), so
 // this gives the dashboard a real-time view: who's recording, for how long, and
-// a one-click Stop. Polls every 4s while mounted.
+// a one-click Stop. Polls every 4s normally, 2s while a session is processing
+// (so completion feels snappy), and pauses entirely while the tab is hidden
+// (refreshing immediately on return) — D5.
 export function LiveProvider({ children }) {
   const { guildId } = useGuild();
   const [live, setLive] = useState([]);
@@ -31,11 +33,31 @@ export function LiveProvider({ children }) {
     }
   }, [guildId]);
 
+  // Poll faster while anything is actively processing (completion should feel
+  // snappy), slower otherwise. The interval is recreated whenever this rate
+  // changes.
+  const pollMs = live.some((s) => s.phase === 'processing') ? 2000 : 4000;
+
   useEffect(() => {
     refresh();
-    timer.current = setInterval(refresh, 4000);
-    return () => clearInterval(timer.current);
   }, [refresh]);
+
+  useEffect(() => {
+    function start() {
+      clearInterval(timer.current);
+      if (!document.hidden) timer.current = setInterval(refresh, pollMs);
+    }
+    function onVisibilityChange() {
+      if (!document.hidden) refresh();
+      start();
+    }
+    start();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      clearInterval(timer.current);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [refresh, pollMs]);
 
   const stop = useCallback(async (channelId) => {
     await api.stopLive(guildId, channelId);
