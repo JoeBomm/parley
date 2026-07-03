@@ -116,8 +116,14 @@ export function requireAuth(_users) {
   };
 }
 
-function requireAdmin(req, res, next) {
-  if (!req.user?.isAdmin) return res.status(403).json({ error: 'Admin access required.' });
+// Gates a route to admin users only. Deliberately permissive when no user is
+// attached at all (req.user undefined/null) — that's the signature of the
+// standalone/test server, which mounts apiRouter without attachUser/requireAuth
+// in front of it. In that mode nobody is authenticated, so there's no admin
+// concept to enforce. Once a real user is attached (attachUser ran), a
+// non-admin is rejected; an admin passes through.
+export function requireAdmin(req, res, next) {
+  if (req.user && !req.user.isAdmin) return res.status(403).json({ error: 'Admin access required.' });
   next();
 }
 

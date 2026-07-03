@@ -59,6 +59,7 @@ export function startBot({ db, audioRoot }) {
     },
   });
   const joiningInProgress = new Set(); // "guildId:channelId" strings
+  const finalizingLostConnections = new Set(); // "guildId:channelId" strings — guards against stopping a lost session twice
   function humanCount(channel) {
     return channel.members.filter((m) => !m.user.bot).size;
   }
@@ -75,6 +76,26 @@ export function startBot({ db, audioRoot }) {
       useVoiceActivity: perms?.has('UseVAD') ?? false,
     };
   }
+  // Shared "the meeting's voice connection is gone for real" path — used both
+  // by the normal /leave + auto-leave flow (stopAndLeave) and by the
+  // stateChange recovery below (A3). Idempotent: manager.stop() is a no-op if
+  // the session already isn't active, and the re-entrancy guard prevents two
+  // concurrent callers (e.g. Disconnected-timeout racing a Destroyed event)
+  // from both trying to finalize the same key at once.
+  async function finalizeLostConnection(guildId, channelId, reason) {
+    const key = `${guildId}:${channelId}`;
+    if (finalizingLostConnections.has(key)) return;
+    if (!manager.isActive(guildId, channelId)) return; // nothing to finalize
+    finalizingLostConnections.add(key);
+    console.warn(`[voice] ${reason} for ${key} — finalizing the in-progress meeting.`);
+    try {
+      await stopAndLeave(guildId, channelId);
+    } catch (err) {
+      console.error(`[voice] failed to finalize lost connection ${key}:`, err.message);
+    } finally {
+      finalizingLostConnections.delete(key);
+    }
+  }
   async function joinAndStart(channel) {
     const joinKey = `${channel.guild.id}:${channel.id}`;
     if (joiningInProgress.has(joinKey)) {
@@ -82,50 +103,81 @@ export function startBot({ db, audioRoot }) {
       return;
     }
     joiningInProgress.add(joinKey);
-    const permCheck = hasVoicePermissions(channel);
-    if (!permCheck.connect) {
-      joiningInProgress.delete(joinKey);
-      throw new Error('Bot lacks **Connect** permission in this voice channel. Check server roles / channel overrides.');
-    }
-    if (!permCheck.speak) {
-      joiningInProgress.delete(joinKey);
-      throw new Error('Bot lacks **Speak** permission in this voice channel. Check server roles / channel overrides.');
-    }
-    console.log(`[voice] joinVoiceChannel guild=${channel.guild.id} channel=${channel.id}`);
-    const connection = joinVoiceChannel({
-      channelId: channel.id, guildId: channel.guild.id,
-      adapterCreator: channel.guild.voiceAdapterCreator, selfDeaf: false, selfMute: true,
-    });
-    console.log(`[voice] connection initial state: ${connection.state.status}`);
-    connection.on('stateChange', (oldState, newState) => {
-      console.log(`[voice] stateChange: ${oldState.status} -> ${newState.status}`);
-    });
-    connection.on('error', (err) => {
-      console.error(`[voice] connection error:`, err.message);
-    });
     try {
-      await entersState(connection, VoiceConnectionStatus.Ready, 25_000);
-      console.log(`[voice] connection reached Ready`);
-    } catch (err) {
-      console.error(`[voice] entersState failed after 25s. Final state: ${connection.state.status}`);
-      connection.destroy();
+      const permCheck = hasVoicePermissions(channel);
+      if (!permCheck.connect) {
+        throw new Error('Bot lacks **Connect** permission in this voice channel. Check server roles / channel overrides.');
+      }
+      if (!permCheck.speak) {
+        throw new Error('Bot lacks **Speak** permission in this voice channel. Check server roles / channel overrides.');
+      }
+      console.log(`[voice] joinVoiceChannel guild=${channel.guild.id} channel=${channel.id}`);
+      const connection = joinVoiceChannel({
+        channelId: channel.id, guildId: channel.guild.id,
+        adapterCreator: channel.guild.voiceAdapterCreator, selfDeaf: false, selfMute: true,
+      });
+      console.log(`[voice] connection initial state: ${connection.state.status}`);
+      connection.on('stateChange', (oldState, newState) => {
+        console.log(`[voice] stateChange: ${oldState.status} -> ${newState.status}`);
+      });
+      connection.on('error', (err) => {
+        console.error(`[voice] connection error:`, err.message);
+      });
+      try {
+        await entersState(connection, VoiceConnectionStatus.Ready, 25_000);
+        console.log(`[voice] connection reached Ready`);
+      } catch (err) {
+        console.error(`[voice] entersState failed after 25s. Final state: ${connection.state.status}`);
+        connection.destroy();
+        throw new Error(
+          `Voice connection failed: ${err.message}. Final state was ${connection.state.status}. ` +
+          `Common causes: missing Connect/Speak permission, bot role below channel restrictions, ` +
+          `or Discord voice region issues. Try moving the bot role higher in Server Settings → Roles.`
+        );
+      }
+      if (manager.isActive(channel.guild.id, channel.id)) {
+        connection.destroy();
+        return;
+      }
+      // A3: only wire up disconnect recovery for the connection that's actually
+      // about to back a meeting (past the Ready + dedup checks above) — a
+      // duplicate/losing connection is destroyed and returned above without
+      // ever reaching here, so it can't mistakenly finalize the real session.
+      // Per @discordjs/voice guidance, Disconnected can mean "about to
+      // reconnect" (region move, brief network blip) or "gone for good"
+      // (kicked, voice server closed); racing a short window for the
+      // connection to start reconnecting (Signalling/Connecting) tells them apart.
+      connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        try {
+          await Promise.race([
+            entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+            entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+          ]);
+          console.log(`[voice] Disconnected looks recoverable for ${channel.guild.id}:${channel.id} (reconnecting)`);
+        } catch {
+          console.warn(`[voice] Disconnected did not recover within 5s for ${channel.guild.id}:${channel.id}`);
+          if (connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
+          await finalizeLostConnection(channel.guild.id, channel.id, 'Voice disconnected (no reconnect)');
+        }
+      });
+      // Safety net: the connection was torn down (e.g. kicked, or destroyed
+      // elsewhere) without recovering. If a meeting is still active in memory
+      // for this guild/channel, finalize it instead of leaving a phantom
+      // "live" session — finalizeLostConnection no-ops if it already isn't active.
+      connection.on(VoiceConnectionStatus.Destroyed, async () => {
+        await finalizeLostConnection(channel.guild.id, channel.id, 'Voice connection destroyed');
+      });
+      const attendees = channel.members.filter((m) => !m.user.bot).map((m) => ({ id: m.id, displayName: m.displayName }));
+      const meetingId = manager.start({ guildId: channel.guild.id, channelId: channel.id, channelName: channel.name, connection, guild: channel.guild, attendees });
+      console.log(`[meeting] Started #${meetingId} in ${channel.name} with ${attendees.length} attendee(s)`);
+      setRecIndicator(channel.guild, true);
+    } finally {
+      // A5: always release the join lock, however we got here (early throws,
+      // the Ready timeout, the isActive race, or a clean start) — otherwise a
+      // channel that hits one of those paths can never be auto-joined again
+      // until restart.
       joiningInProgress.delete(joinKey);
-      throw new Error(
-        `Voice connection failed: ${err.message}. Final state was ${connection.state.status}. ` +
-        `Common causes: missing Connect/Speak permission, bot role below channel restrictions, ` +
-        `or Discord voice region issues. Try moving the bot role higher in Server Settings → Roles.`
-      );
     }
-    if (manager.isActive(channel.guild.id, channel.id)) {
-      connection.destroy();
-      joiningInProgress.delete(joinKey);
-      return;
-    }
-    const attendees = channel.members.filter((m) => !m.user.bot).map((m) => ({ id: m.id, displayName: m.displayName }));
-    const meetingId = manager.start({ guildId: channel.guild.id, channelId: channel.id, channelName: channel.name, connection, guild: channel.guild, attendees });
-    joiningInProgress.delete(joinKey);
-    console.log(`[meeting] Started #${meetingId} in ${channel.name} with ${attendees.length} attendee(s)`);
-    setRecIndicator(channel.guild, true);
   }
   async function stopAndLeave(guildId, channelId) {
     console.log(`[meeting] Stopping meeting in guild:${guildId} channel:${channelId}`);

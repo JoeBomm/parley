@@ -15,6 +15,7 @@ import { secretStatus, setProviderKey, isSecretProvider, connectionStatus, setCo
 import { COMMAND_CATALOG } from '../commands/definitions.js';
 import { retryMeeting, retryPlan, RETRYABLE_STATUSES } from '../pipeline/retry.js';
 import { availableSttProviders } from '../adapters/stt/index.js';
+import { requireAdmin } from './auth.js';
 
 function audioDir(id) {
   return join(env.dataDir, 'audio', String(id));
@@ -150,7 +151,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     }
   });
 
-  r.delete('/meetings/:id', async (req, res) => {
+  r.delete('/meetings/:id', requireAdmin, async (req, res) => {
     const id = Number(req.params.id);
     const meeting = db.getMeeting(id);
     if (!meeting) return res.status(404).json({ error: 'meeting not found' });
@@ -161,7 +162,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
 
   // Merge sourceIds into the target meeting, then re-summarize the combined
   // transcript. Sources must share the target's guild.
-  r.post('/meetings/:id/merge', async (req, res) => {
+  r.post('/meetings/:id/merge', requireAdmin, async (req, res) => {
     const targetId = Number(req.params.id);
     const target = db.getMeeting(targetId);
     if (!target) return res.status(404).json({ error: 'meeting not found' });
@@ -275,7 +276,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
 
   // Set or clear a provider's API key. Persists to .env and updates the live
   // config so it takes effect immediately. Never returns the key value.
-  r.put('/providers/:provider/key', async (req, res) => {
+  r.put('/providers/:provider/key', requireAdmin, async (req, res) => {
     const { provider } = req.params;
     if (!isSecretProvider(provider)) {
       return res.status(400).json({ error: `Provider "${provider}" has no editable API key.` });
@@ -316,7 +317,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
 
   // Save Discord token / client id / STT url (any subset), persist to .env,
   // apply live, and (re)start the bot if it's managed and creds are present.
-  r.put('/system/connection', async (req, res) => {
+  r.put('/system/connection', requireAdmin, async (req, res) => {
     const patch = {};
     for (const k of ['discordToken', 'discordClientId', 'sttUrl']) {
       if (typeof req.body?.[k] === 'string') patch[k] = req.body[k];
@@ -336,7 +337,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
   });
 
   // Manually (re)start or stop the bot.
-  r.post('/system/bot/:action', async (req, res) => {
+  r.post('/system/bot/:action', requireAdmin, async (req, res) => {
     if (!bot) return res.status(400).json({ error: 'Bot is not managed by this server.' });
     const { action } = req.params;
     try {
@@ -353,7 +354,7 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
   // Start/stop/restart the local STT sidecar process from the dashboard. The
   // sidecar is a single global process (transcription backend), so this is not
   // per-guild. Unmanaged in Docker (separate container) — report that clearly.
-  r.post('/system/sidecar/:action', async (req, res) => {
+  r.post('/system/sidecar/:action', requireAdmin, async (req, res) => {
     if (!sidecar) return res.status(400).json({ error: 'Sidecar is not managed by this server.' });
     const { action } = req.params;
     if (!sidecar.managed() && action !== 'status') {

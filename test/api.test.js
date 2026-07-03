@@ -34,6 +34,16 @@ function appWithSidecar(db, sidecar) {
   return app;
 }
 
+// Mounts apiRouter with a fixed req.user, standing in for attachUser +
+// requireAuth in the real server, to exercise requireAdmin gating (D3).
+function appWithUser(db, user) {
+  const app = express();
+  app.use(express.json());
+  app.use('/api', (req, _res, next) => { req.user = user; next(); });
+  app.use('/api', apiRouter({ db, client: null }));
+  return app;
+}
+
 async function listen(app) {
   const server = app.listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
@@ -269,3 +279,73 @@ test('POST /api/system/bot/:action is rejected when unmanaged', async () => {
     assert.equal(r.status, 400);
   } finally { close(); }
 });
+
+// D3: requireAdmin gates system/provider-key/destructive-meeting routes.
+// PATCH /guilds/:g/config is deliberately NOT gated (stays open to all users).
+test('D3: non-admin user gets 403 on admin-gated routes', async () => {
+  const db = openDb(':memory:');
+  const id = db.createMeeting({ guildId: 'g1', channelId: 'c', channelName: 'gen', startedAt: 'now' });
+  const { base, close } = await listen(appWithUser(db, { id: 1, username: 'bob', isAdmin: false }));
+  try {
+    const putKey = await fetch(`${base}/api/providers/openai/key`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: 'x' }),
+    });
+    assert.equal(putKey.status, 403);
+
+    const putConn = await fetch(`${base}/api/system/connection`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sttUrl: 'http://x' }),
+    });
+    assert.equal(putConn.status, 403);
+
+    const botAction = await fetch(`${base}/api/system/bot/start`, { method: 'POST' });
+    assert.equal(botAction.status, 403);
+
+    const sidecarAction = await fetch(`${base}/api/system/sidecar/start`, { method: 'POST' });
+    assert.equal(sidecarAction.status, 403);
+
+    const del = await fetch(`${base}/api/meetings/${id}`, { method: 'DELETE' });
+    assert.equal(del.status, 403);
+
+    const merge = await fetch(`${base}/api/meetings/${id}/merge`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sourceIds: [999] }),
+    });
+    assert.equal(merge.status, 403);
+
+    // Config PATCH is intentionally left open to non-admins.
+    const cfg = await fetch(`${base}/api/guilds/g1/config`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
+    });
+    assert.equal(cfg.status, 200);
+  } finally { close(); }
+});
+
+test('D3: admin user passes the admin-gated routes (rejected downstream, not by requireAdmin)', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWithUser(db, { id: 1, username: 'root', isAdmin: true }));
+  try {
+    // Unmanaged bot/sidecar/provider paths still 400 for an admin — proves
+    // requireAdmin let the request through to the actual handler.
+    const putKey = await fetch(`${base}/api/providers/nope/key`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: 'x' }),
+    });
+    assert.equal(putKey.status, 400); // unknown provider, past the 403 gate
+
+    const botAction = await fetch(`${base}/api/system/bot/start`, { method: 'POST' });
+    assert.equal(botAction.status, 400); // no bot controller attached, past the 403 gate
+  } finally { close(); }
+});
+
+test('D3: no-auth standalone server (no req.user attached) still passes admin routes', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWith(db)); // no req.user middleware at all
+  try {
+    const putKey = await fetch(`${base}/api/providers/nope/key`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: 'x' }),
+    });
+    assert.equal(putKey.status, 400); // reaches the handler, not blocked by requireAdmin
+
+    const botAction = await fetch(`${base}/api/system/bot/start`, { method: 'POST' });
+    assert.equal(botAction.status, 400);
+  } finally { close(); }
+});
+
