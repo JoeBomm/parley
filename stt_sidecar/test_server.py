@@ -70,6 +70,31 @@ def test_health_reports_device_and_compute(monkeypatch):
     body = TestClient(app).get("/health").json()
     assert body["device"] == "cuda" and body["compute"] == "float16"
 
+def test_warmup_inference_failure_falls_back_to_cpu(monkeypatch):
+    # Model construction can succeed on a broken cuda runtime (e.g. pip nvidia
+    # libs missing from the loader path); the failure only surfaces on the
+    # first real inference. get_model's warm-up call must catch that and fall
+    # back to cpu instead of leaving a broken cuda model cached.
+    reset_state()
+
+    class BrokenCudaModel:
+        def __init__(self, device):
+            self.device = device
+        def transcribe(self, audio, **kwargs):
+            if self.device == "cuda":
+                raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+            return [], type("I", (), {"language": "en"})()
+
+    attempts = []
+    def fake_ctor(name, device, compute_type):
+        attempts.append((device, compute_type))
+        return BrokenCudaModel(device)
+    monkeypatch.setattr("server.WhisperModel", fake_ctor)
+    import server
+    server.get_model("small")
+    assert attempts == [("cuda", "float16"), ("cpu", "int8")]
+    assert _state["device"] == "cpu" and _state["compute"] == "int8"
+
 def test_transcribe_rebuilds_model_on_name_change(monkeypatch):
     # A model is warm under a different name; a request for "small" must rebuild.
     _state["model"] = FakeModel()
