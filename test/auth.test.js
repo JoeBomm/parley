@@ -9,12 +9,13 @@ import { authRouter, attachUser, requireAuth } from '../src/web/auth.js';
 // Mount the auth router exactly like the real server: attachUser resolves the
 // cookie, the auth routes are public, and a protected probe stands in for the
 // rest of the API.
-function appWith(db) {
+function appWith(db, { trustProxy = false, now } = {}) {
   const users = installUsers(db);
   const app = express();
+  if (trustProxy) app.set('trust proxy', true);
   app.use(express.json());
   app.use(attachUser(users));
-  app.use('/api', authRouter({ users }));
+  app.use('/api', authRouter(now ? { users, now } : { users }));
   app.use('/api', requireAuth(users), (req, res) => res.json({ ok: true, user: req.user }));
   return { app, users };
 }
@@ -26,9 +27,9 @@ async function listen(app) {
   return { base: `http://127.0.0.1:${port}`, close: () => server.close() };
 }
 
-const jpost = (base, path, body, cookie) => fetch(`${base}${path}`, {
+const jpost = (base, path, body, cookie, headers) => fetch(`${base}${path}`, {
   method: 'POST',
-  headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+  headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}), ...(headers || {}) },
   body: JSON.stringify(body || {}),
 });
 
@@ -154,5 +155,101 @@ test('admin password reset for another user revokes their sessions', async () =>
     assert.equal((await fetch(`${base}/api/anything`, { headers: { cookie: janeCookie } })).status, 401);
     assert.equal((await jpost(base, '/api/auth/login', { username: 'jane', password: 'pw1234' })).status, 401);
     assert.equal((await jpost(base, '/api/auth/login', { username: 'jane', password: 'fresh1' })).status, 200);
+  } finally { close(); }
+});
+
+// ── D1: Secure cookie flag ────────────────────────────────────────────────────
+
+test('login over https (trust proxy + X-Forwarded-Proto) sets a Secure cookie', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWith(db, { trustProxy: true }).app);
+  try {
+    const res = await jpost(base, '/api/auth/login',
+      { username: 'admin', password: 'admin' }, null, { 'x-forwarded-proto': 'https' });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('set-cookie'), /;\s*Secure/i);
+
+    // Logout mirrors the Secure attribute so browsers match the cookie.
+    const cookie = cookieOf(res);
+    const out = await jpost(base, '/api/auth/logout', {}, cookie, { 'x-forwarded-proto': 'https' });
+    assert.match(out.headers.get('set-cookie'), /;\s*Secure/i);
+  } finally { close(); }
+});
+
+test('login over plain http does not set the Secure attribute', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWith(db).app);
+  try {
+    const res = await jpost(base, '/api/auth/login', { username: 'admin', password: 'admin' });
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(res.headers.get('set-cookie'), /;\s*Secure/i);
+  } finally { close(); }
+});
+
+// ── D2: login rate limiting ───────────────────────────────────────────────────
+
+test('6th attempt after 5 failed logins is 429 with Retry-After', async () => {
+  const db = openDb(':memory:');
+  let t = 1_000_000;
+  const { base, close } = await listen(appWith(db, { now: () => t }).app);
+  try {
+    for (let i = 0; i < 5; i++) {
+      const res = await jpost(base, '/api/auth/login', { username: 'admin', password: 'wrong' });
+      assert.equal(res.status, 401, `attempt ${i + 1} should still be 401`);
+    }
+    // Locked now — even the correct password is rejected until the window lifts.
+    const locked = await jpost(base, '/api/auth/login', { username: 'admin', password: 'admin' });
+    assert.equal(locked.status, 429);
+    const retryAfter = Number(locked.headers.get('retry-after'));
+    assert.ok(Number.isInteger(retryAfter) && retryAfter > 0, `Retry-After should be a positive integer, got ${locked.headers.get('retry-after')}`);
+  } finally { close(); }
+});
+
+test('a successful login resets the failure counter', async () => {
+  const db = openDb(':memory:');
+  let t = 1_000_000;
+  const { base, close } = await listen(appWith(db, { now: () => t }).app);
+  try {
+    for (let i = 0; i < 4; i++) {
+      assert.equal((await jpost(base, '/api/auth/login', { username: 'admin', password: 'wrong' })).status, 401);
+    }
+    // One attempt left; a success wipes the slate...
+    assert.equal((await jpost(base, '/api/auth/login', { username: 'admin', password: 'admin' })).status, 200);
+    // ...so 4 more failures still don't lock, and the correct password works.
+    for (let i = 0; i < 4; i++) {
+      assert.equal((await jpost(base, '/api/auth/login', { username: 'admin', password: 'wrong' })).status, 401);
+    }
+    assert.equal((await jpost(base, '/api/auth/login', { username: 'admin', password: 'admin' })).status, 200);
+  } finally { close(); }
+});
+
+test('the lockout expires once the injected clock passes the window', async () => {
+  const db = openDb(':memory:');
+  let t = 1_000_000;
+  const { base, close } = await listen(appWith(db, { now: () => t }).app);
+  try {
+    for (let i = 0; i < 5; i++) {
+      await jpost(base, '/api/auth/login', { username: 'admin', password: 'wrong' });
+    }
+    assert.equal((await jpost(base, '/api/auth/login', { username: 'admin', password: 'admin' })).status, 429);
+    t += 31_000; // past the 30s first lockout window
+    assert.equal((await jpost(base, '/api/auth/login', { username: 'admin', password: 'admin' })).status, 200);
+  } finally { close(); }
+});
+
+test('a different username on the same IP is not locked out', async () => {
+  const db = openDb(':memory:');
+  let t = 1_000_000;
+  const { app, users } = appWith(db, { now: () => t });
+  users.createUser({ username: 'jane', password: 'pw1234' });
+  const { base, close } = await listen(app);
+  try {
+    for (let i = 0; i < 5; i++) {
+      await jpost(base, '/api/auth/login', { username: 'admin', password: 'wrong' });
+    }
+    assert.equal((await jpost(base, '/api/auth/login', { username: 'admin', password: 'admin' })).status, 429);
+    // Same IP, different username — unaffected.
+    assert.equal((await jpost(base, '/api/auth/login', { username: 'jane', password: 'wrong' })).status, 401);
+    assert.equal((await jpost(base, '/api/auth/login', { username: 'jane', password: 'pw1234' })).status, 200);
   } finally { close(); }
 });
