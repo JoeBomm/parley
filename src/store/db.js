@@ -136,7 +136,10 @@ export function openDb(path) {
       sql.prepare(`DELETE FROM todos WHERE meeting_id = ?`).run(meetingId);
     },
     setMeetingStatus(id, status, endedAt = null) {
-      sql.prepare(`UPDATE meetings SET status = ?, ended_at = COALESCE(?, ended_at) WHERE id = ?`)
+      // ended_at only fills in when still null: the recording-stop timestamp
+      // (stamped at 'processing') must win over the pipeline-finish timestamp
+      // passed at 'done', so durations reflect recording time, not pipeline time.
+      sql.prepare(`UPDATE meetings SET status = ?, ended_at = COALESCE(ended_at, ?) WHERE id = ?`)
         .run(status, endedAt, id);
     },
     listRecent(guildId, limit = 10) {

@@ -55,7 +55,9 @@ test('listActive returns plain session data without voice handles', () => {
 test('stop finalizes and clears the active key', async () => {
   const { db, mgr } = makeManager();
   const id = mgr.start({ guildId: 'g', channelId: 'c', channelName: 'x', connection: {}, guild: {}, attendees: [] });
-  await mgr.stop('g', 'c');
+  const { meetingId, done } = await mgr.stop('g', 'c');
+  await done;
+  assert.equal(meetingId, id);
   assert.equal(mgr.isActive('g', 'c'), false);
   assert.ok(db.getMeeting(id));
 });
@@ -73,7 +75,8 @@ test('stop() twice finalizes once and is a no-op the second time', async () => {
   mgr.start({ guildId: 'g', channelId: 'c', channelName: 'x', connection: {}, guild: {}, attendees: [] });
   const first = await mgr.stop('g', 'c');
   const second = await mgr.stop('g', 'c');
-  assert.ok(first);                 // first stop returns the meetingId
+  assert.ok(first.meetingId);      // first stop returns { meetingId, done }
+  await first.done;
   assert.equal(second, null);       // second stop is a no-op
   assert.equal(finalizeCalls, 1);   // finalize fired exactly once
   assert.equal(mgr.isActive('g', 'c'), false);
@@ -93,6 +96,75 @@ test('stop flushes via stopAll before harvesting tracks and finalizing', async (
     now: () => '2026-06-04T10:00:00Z',
   });
   mgr.start({ guildId: 'g', channelId: 'c', channelName: 'x', connection: {}, guild: {}, attendees: [] });
-  await mgr.stop('g', 'c');
+  const { done } = await mgr.stop('g', 'c');
+  await done;
   assert.deepEqual(order, ['stopAll', 'list', 'finalize']);
+});
+
+// Build a manager whose finalize blocks until the test releases it, so we can
+// observe the window between "recording stopped" and "pipeline finished".
+function makeDeferredManager({ fail = false } = {}) {
+  const db = openDb(':memory:');
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const mgr = new MeetingManager({
+    db,
+    audioRoot: '/tmp/audio',
+    startCapture: () => ({ registry: { list: () => [] } }),
+    finalize: async () => { await gate; if (fail) throw new Error('pipeline boom'); },
+    now: () => '2026-06-04T10:30:00Z',
+  });
+  return { db, mgr, release };
+}
+
+test('stop resolves fast, before finalize settles; listProcessing shows the meeting until then', async () => {
+  const { db, mgr, release } = makeDeferredManager();
+  const id = mgr.start({ guildId: 'g', channelId: 'c', channelName: 'standup', connection: {}, guild: {}, attendees: [] });
+
+  // stop() returns while finalize is still gated — that's the whole point.
+  const { meetingId, done } = await mgr.stop('g', 'c');
+  assert.equal(meetingId, id);
+  assert.equal(mgr.isActive('g', 'c'), false);
+  assert.equal(db.getMeeting(id).status, 'processing');
+  assert.equal(db.getMeeting(id).ended_at, '2026-06-04T10:30:00Z');
+
+  const processing = mgr.listProcessing();
+  assert.equal(processing.length, 1);
+  assert.deepEqual(processing[0], {
+    meetingId: id, guildId: 'g', channelId: 'c', channelName: 'standup',
+    startedAt: '2026-06-04T10:30:00Z', stoppedAt: '2026-06-04T10:30:00Z',
+  });
+
+  release();
+  await done;
+  assert.equal(mgr.listProcessing().length, 0);
+});
+
+test('processing entry clears when finalize fails', async () => {
+  const { mgr, release } = makeDeferredManager({ fail: true });
+  mgr.start({ guildId: 'g', channelId: 'c', channelName: 'x', connection: {}, guild: {}, attendees: [] });
+  const { done } = await mgr.stop('g', 'c');
+  assert.equal(mgr.listProcessing().length, 1);
+  release();
+  await assert.rejects(done, /pipeline boom/);
+  assert.equal(mgr.listProcessing().length, 0);
+});
+
+test('ended_at is stamped at recording stop and NOT overwritten at done', async () => {
+  const db = openDb(':memory:');
+  const mgr = new MeetingManager({
+    db,
+    audioRoot: '/tmp/audio',
+    startCapture: () => ({ registry: { list: () => [] } }),
+    // Mimics the orchestrator: it passes its own (later) timestamp at 'done'.
+    finalize: async (meetingId) => { db.setMeetingStatus(meetingId, 'done', '2026-06-04T10:45:00Z'); },
+    now: () => '2026-06-04T10:30:00Z',
+  });
+  const id = mgr.start({ guildId: 'g', channelId: 'c', channelName: 'x', connection: {}, guild: {}, attendees: [] });
+  const { done } = await mgr.stop('g', 'c');
+  await done;
+  const m = db.getMeeting(id);
+  assert.equal(m.status, 'done');
+  // Duration = recording time: the stop timestamp wins over the pipeline-finish one.
+  assert.equal(m.ended_at, '2026-06-04T10:30:00Z');
 });

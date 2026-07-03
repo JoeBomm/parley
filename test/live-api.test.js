@@ -6,9 +6,9 @@ import { openDb } from '../src/store/db.js';
 import { apiRouter } from '../src/web/api.js';
 
 // A fake bot controller exposing just the live surface the API uses.
-function fakeBot(sessions = []) {
+function fakeBot(sessions = [], client = null) {
   return {
-    client: null,
+    client,
     _sessions: [...sessions],
     liveMeetings() { return this._sessions; },
     async stopMeeting(guildId, channelId) {
@@ -76,5 +76,37 @@ test('live endpoints degrade gracefully with no bot attached', async () => {
     assert.deepEqual(live, []);
     const stop = await fetch(`${base}/api/guilds/g1/live/c1/stop`, { method: 'POST' });
     assert.equal(stop.status, 400); // not managed here
+  } finally { close(); }
+});
+
+test('phase passes through; processing entries skip the live roster override', async () => {
+  const db = openDb(':memory:');
+  const rec = db.createMeeting({ guildId: 'g1', channelId: 'c1', channelName: 'standup', startedAt: 'now' });
+  db.addAttendee(rec, 'u1', 'Alice');
+  const proc = db.createMeeting({ guildId: 'g1', channelId: 'c2', channelName: 'retro', startedAt: 'now' });
+  db.addAttendee(proc, 'u2', 'Bob');
+  // Both channels have live voice members named Zoe — only the recording
+  // session may use that roster; the processing one keeps stored attendees.
+  const client = {
+    guilds: { cache: new Map([['g1', { channels: { cache: new Map([
+      ['c1', { members: new Map([['z', { id: 'z', displayName: 'Zoe', user: { bot: false } }]]) }],
+      ['c2', { members: new Map([['z', { id: 'z', displayName: 'Zoe', user: { bot: false } }]]) }],
+    ]) } }]]) },
+  };
+  const bot = fakeBot([
+    { meetingId: rec, guildId: 'g1', channelId: 'c1', channelName: 'standup', startedAt: '2026-07-03T10:00:00Z', phase: 'recording' },
+    { meetingId: proc, guildId: 'g1', channelId: 'c2', channelName: 'retro', startedAt: '2026-07-03T09:00:00Z', stoppedAt: '2026-07-03T09:30:00Z', phase: 'processing' },
+  ], client);
+  const { base, close } = await listen(appWith(db, bot));
+  try {
+    const { live } = await (await fetch(`${base}/api/guilds/g1/live`)).json();
+    assert.equal(live.length, 2);
+    const recording = live.find((s) => s.phase === 'recording');
+    const processing = live.find((s) => s.phase === 'processing');
+    // Recording: live voice-channel roster wins.
+    assert.deepEqual(recording.attendees.map((a) => a.displayName), ['Zoe']);
+    // Processing: bot already left the channel — stored attendees, stoppedAt kept.
+    assert.deepEqual(processing.attendees.map((a) => a.displayName), ['Bob']);
+    assert.equal(processing.stoppedAt, '2026-07-03T09:30:00Z');
   } finally { close(); }
 });

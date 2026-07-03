@@ -129,6 +129,8 @@ export function startBot({ db, audioRoot }) {
   }
   async function stopAndLeave(guildId, channelId) {
     console.log(`[meeting] Stopping meeting in guild:${guildId} channel:${channelId}`);
+    // stop() resolves as soon as capture is flushed; the transcribe/summarize
+    // pipeline runs in the background (await result.done only if you must wait).
     await manager.stop(guildId, channelId);
     const conn = getVoiceConnection(guildId);
     if (conn && conn.state.status !== VoiceConnectionStatus.Destroyed) conn.destroy();
@@ -204,7 +206,7 @@ export function startBot({ db, audioRoot }) {
         if (!channelId || !manager.isActive(guild.id, channelId)) return interaction.reply({ content: "❌ I'm not recording here.", ephemeral: true });
         await interaction.deferReply({ ephemeral: true });
         await stopAndLeave(guild.id, channelId);
-        return interaction.editReply('✅ Stopped. Notes will post shortly.');
+        return interaction.editReply('✅ Stopped. Processing — notes will post shortly.');
       }
       if (commandName === 'summary') {
         const id = interaction.options.getInteger('meeting') ?? db.listRecent(guild.id, 1)[0]?.id;

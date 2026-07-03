@@ -6,6 +6,7 @@ export class MeetingManager {
     this.finalize = finalize;             // async (meetingId, tracks, ctx) -> void
     this.now = now;
     this.active = new Map();              // key "guild:channel" -> session
+    this.processing = new Map();          // meetingId -> post-recording session data
   }
 
   key(guildId, channelId) { return `${guildId}:${channelId}`; }
@@ -25,6 +26,16 @@ export class MeetingManager {
     return meetingId;
   }
 
+  /**
+   * Stop capture and return fast. Transcription + summarization (finalize) can
+   * take minutes, so it runs in the background: the meeting moves to
+   * `this.processing` so the live view can show a "Processing" card, and
+   * `ended_at` is stamped NOW so durations reflect recording time, not
+   * recording + pipeline time.
+   * Returns { meetingId, done } — callers that genuinely need to wait for the
+   * pipeline (tests, CLI scripts) can await `done`; the API and bot handlers
+   * must not, so Stop resolves in ~1s.
+   */
   async stop(guildId, channelId) {
     const k = this.key(guildId, channelId);
     const session = this.active.get(k);
@@ -32,8 +43,27 @@ export class MeetingManager {
     this.active.delete(k);
     if (session.stopAll) await session.stopAll();  // flush in-flight speaking turns first
     const tracks = session.registry.list();
-    await this.finalize(session.meetingId, tracks, session);
-    return session.meetingId;
+
+    const stoppedAt = this.now();
+    this.db.setMeetingStatus(session.meetingId, 'processing', stoppedAt);
+    this.processing.set(session.meetingId, {
+      meetingId: session.meetingId,
+      guildId: session.guildId,
+      channelId: session.channelId,
+      channelName: session.channelName,
+      startedAt: session.startedAt,
+      stoppedAt,
+    });
+
+    // Kick finalize WITHOUT awaiting. It settles (success or failure) → the
+    // meeting leaves the processing map, so a failed pipeline can't strand a
+    // phantom "Processing" card. finalize owns its own error handling/reporting.
+    const done = Promise.resolve()
+      .then(() => this.finalize(session.meetingId, tracks, session))
+      .finally(() => this.processing.delete(session.meetingId));
+    done.catch(() => {}); // callers may not await `done` — never leave an unhandled rejection
+
+    return { meetingId: session.meetingId, done };
   }
 
   // In-progress recordings, as plain data for the web dashboard's live view.
@@ -45,6 +75,19 @@ export class MeetingManager {
       channelId: s.channelId,
       channelName: s.channelName,
       startedAt: s.startedAt,
+    }));
+  }
+
+  // Meetings whose recording stopped but whose pipeline (transcribe/summarize/
+  // post) is still running. Same plain-data shape as listActive, plus stoppedAt.
+  listProcessing() {
+    return [...this.processing.values()].map((s) => ({
+      meetingId: s.meetingId,
+      guildId: s.guildId,
+      channelId: s.channelId,
+      channelName: s.channelName,
+      startedAt: s.startedAt,
+      stoppedAt: s.stoppedAt,
     }));
   }
 }

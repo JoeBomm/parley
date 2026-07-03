@@ -44,19 +44,25 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
 
   // Active recordings for a guild, enriched with the voice channel's current
   // members (so the UI can show who's live). Reads in-memory bot sessions; empty
-  // when no bot is attached (e.g. the standalone read-only server).
+  // when no bot is attached (e.g. the standalone read-only server). Sessions
+  // carry a `phase`: 'recording' (capture in progress) or 'processing'
+  // (recording stopped, transcribe/summarize pipeline still running).
   function liveMeetings(guildId) {
     const sessions = (bot && typeof bot.liveMeetings === 'function' ? bot.liveMeetings() : [])
       .filter((s) => s.guildId === guildId);
     const c = liveClient();
     return sessions.map((s) => {
       let attendees = db.listAttendees(s.meetingId).map((a) => ({ id: a.user_id, displayName: a.display_name }));
-      const channel = c?.guilds?.cache?.get(s.guildId)?.channels?.cache?.get(s.channelId);
-      if (channel?.members) {
-        // Prefer the live voice-channel roster (people who joined mid-meeting).
-        const live = [...channel.members.values()].filter((m) => !m.user?.bot)
-          .map((m) => ({ id: m.id, displayName: m.displayName }));
-        if (live.length) attendees = live;
+      // Once the bot has left the channel (phase 'processing'), the live voice
+      // roster is irrelevant — stick with the stored attendees.
+      if (s.phase !== 'processing') {
+        const channel = c?.guilds?.cache?.get(s.guildId)?.channels?.cache?.get(s.channelId);
+        if (channel?.members) {
+          // Prefer the live voice-channel roster (people who joined mid-meeting).
+          const live = [...channel.members.values()].filter((m) => !m.user?.bot)
+            .map((m) => ({ id: m.id, displayName: m.displayName }));
+          if (live.length) attendees = live;
+        }
       }
       return { ...s, attendees };
     });

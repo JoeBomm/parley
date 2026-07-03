@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useLive } from '../LiveContext.jsx';
 import { AvatarStack, Icon } from './ui.jsx';
 import { fmtClock } from '../lib/format.js';
+
+function parseTs(ts) {
+  return ts ? new Date(String(ts).replace(' ', 'T')).getTime() : Date.now();
+}
 
 /** Live elapsed time since `startedAt`, ticking once a second. */
 export function useElapsed(startedAt) {
@@ -10,7 +15,7 @@ export function useElapsed(startedAt) {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
-  const start = startedAt ? new Date(String(startedAt).replace(' ', 'T')).getTime() : now;
+  const start = startedAt ? parseTs(startedAt) : now;
   return Math.max(0, now - start);
 }
 
@@ -47,8 +52,15 @@ function StopButton({ channelId, small = false }) {
   );
 }
 
-/** A single in-progress recording, with a live timer and stop control. */
+/** A single live session card. Branches on phase: an in-progress recording
+ * (ticking timer + stop control) or a stopped meeting whose transcribe/
+ * summarize pipeline is still running (frozen timer, no stop). */
 export function LiveCard({ session }) {
+  if (session.phase === 'processing') return <ProcessingCard session={session} />;
+  return <RecordingCard session={session} />;
+}
+
+function RecordingCard({ session }) {
   const elapsed = useElapsed(session.startedAt);
   const names = (session.attendees || []).map((a) => a.displayName);
   return (
@@ -68,6 +80,35 @@ export function LiveCard({ session }) {
         <div className="flex flex-col items-end gap-3">
           <AvatarStack names={names} size={26} max={6} />
           <StopButton channelId={session.channelId} small />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProcessingCard({ session }) {
+  // Recording is over — show the frozen recording duration, not a ticking timer.
+  const elapsed = Math.max(0, parseTs(session.stoppedAt) - parseTs(session.startedAt));
+  const names = (session.attendees || []).map((a) => a.displayName);
+  return (
+    <div className="card p-5 border-l-2 animate-fade-up" style={{ borderColor: 'var(--warn)' }}>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="h-3 w-3 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'var(--warn)', borderTopColor: 'transparent' }} />
+            <span className="text-[11px] font-bold uppercase tracking-wider" style={{ color: 'var(--warn)' }}>Processing</span>
+            <span className="chip"><Icon.Hash width={11} height={11} />{session.channelName}</span>
+          </div>
+          <div className="font-display text-[26px] font-extrabold tabular-nums text-ink leading-none mt-2">
+            {fmtClock(elapsed)}
+          </div>
+          <p className="text-xs text-muted mt-1.5">Meeting #{session.meetingId} · Transcribing and summarizing — notes will post when done.</p>
+        </div>
+        <div className="flex flex-col items-end gap-3">
+          <AvatarStack names={names} size={26} max={6} />
+          <Link to={`/meetings/${session.meetingId}`} className="btn btn-ghost !py-1.5">
+            View meeting <Icon.Arrow width={14} height={14} />
+          </Link>
         </div>
       </div>
     </div>

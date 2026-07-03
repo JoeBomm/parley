@@ -10,11 +10,18 @@ export default function Live() {
 
   if (!guildId) return <Page><Empty icon={Icon.Radio} title="No server selected" body="Pick a Discord server to see its live recordings." /></Page>;
 
+  const recording = live.filter((s) => s.phase !== 'processing').length;
+  const processing = live.length - recording;
+  const counts = [
+    recording > 0 && `${recording} recording${recording === 1 ? '' : 's'} in progress`,
+    processing > 0 && `${processing} processing`,
+  ].filter(Boolean).join(' · ');
+
   return (
     <Page>
       <PageHead
         title="Live"
-        subtitle={live.length ? `${live.length} recording${live.length === 1 ? '' : 's'} in progress` : 'Real-time view of in-progress recordings'}
+        subtitle={counts || 'Real-time view of in-progress recordings'}
       />
       {error && (
         <div className="mb-5 text-sm text-error bg-error-soft rounded-sm px-3 py-2">{error}</div>
@@ -29,7 +36,7 @@ export default function Live() {
         </div>
       ) : (
         <div className="space-y-4">
-          {live.map((s) => <LiveCard key={`${s.guildId}:${s.channelId}`} session={s} />)}
+          {live.map((s) => <LiveCard key={s.meetingId} session={s} />)}
         </div>
       )}
     </Page>

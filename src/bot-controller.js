@@ -58,16 +58,22 @@ export class BotController {
     this.state = 'stopped';
   }
 
-  /** In-progress recordings (for the web dashboard's live view). */
+  /** Live sessions for the web dashboard: recordings plus post-recording pipelines. */
   liveMeetings() {
-    return this.manager ? this.manager.listActive() : [];
+    if (!this.manager) return [];
+    return [
+      ...this.manager.listActive().map((s) => ({ ...s, phase: 'recording' })),
+      ...this.manager.listProcessing().map((s) => ({ ...s, phase: 'processing' })),
+    ];
   }
 
   /** Stop a live recording in a channel from the dashboard. Best-effort. */
   async stopMeeting(guildId, channelId) {
     if (!this.manager) throw new Error('Bot is not running.');
     if (!this.manager.isActive(guildId, channelId)) return { ok: false, error: 'No active recording in that channel.' };
-    // stopAndLeave both finalizes the meeting and disconnects the voice client.
+    // stopAndLeave stops capture and disconnects the voice client. It resolves
+    // as soon as the capture is flushed — the transcribe/summarize pipeline
+    // continues in the background (visible via phase 'processing').
     if (this.stopAndLeave) await this.stopAndLeave(guildId, channelId);
     else await this.manager.stop(guildId, channelId);
     return { ok: true };

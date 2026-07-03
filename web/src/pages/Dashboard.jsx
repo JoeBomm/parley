@@ -90,7 +90,7 @@ export default function Dashboard() {
       {/* Live recordings in progress */}
       {live.length > 0 && (
         <div className="space-y-4 mb-8">
-          {live.map((s) => <LiveCard key={`${s.guildId}:${s.channelId}`} session={s} />)}
+          {live.map((s) => <LiveCard key={s.meetingId} session={s} />)}
         </div>
       )}
 
