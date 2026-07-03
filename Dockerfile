@@ -24,7 +24,7 @@ RUN npm ci --omit=dev
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
-# ffmpeg-static ships its own binary; no system ffmpeg needed.
+# WAV headers are written in pure JS (src/voice/audio.js); no ffmpeg needed.
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY src ./src
