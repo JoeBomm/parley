@@ -20,7 +20,7 @@ test('processMeeting transcribes, summarizes, stores, sets done, delivers', asyn
     tracks,
     cfg: { summarizerProvider: 'fake', whisperModel: 'small', language: 'auto' },
     summarizer: new FakeSummarizer(),
-    transcribe: async () => [{ userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'hello team' }],
+    transcribe: async () => ({ utterances: [{ userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'hello team' }], failures: [] }),
     deliver: async (notes, talktime) => { delivered = { notes, talktime }; },
   });
   assert.equal(db.getMeeting(id).status, 'done');
@@ -42,6 +42,40 @@ test('processMeeting marks transcription_failed and rethrows on STT error', asyn
   assert.equal(db.getMeeting(id).status, 'transcription_failed');
 });
 
+test('processMeeting keeps a meeting alive when only some tracks fail transcription', async () => {
+  const { db, id } = seed();
+  const { notes, talktime } = await processMeeting(db, id, {
+    tracks: [
+      { userId: 'u1', displayName: 'Alice', startMs: 0, pcmPath: '/a.pcm' },
+      { userId: 'u2', displayName: 'Bob', startMs: 1000, pcmPath: '/b.pcm' },
+    ],
+    cfg: { summarizerProvider: 'fake' },
+    summarizer: new FakeSummarizer(),
+    transcribe: async () => ({
+      utterances: [{ userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'hello team' }],
+      failures: [{ userId: 'u2', displayName: 'Bob', error: 'corrupt pcm' }],
+    }),
+    deliver: async () => {},
+  });
+  assert.equal(db.getMeeting(id).status, 'done');
+  assert.equal(db.listUtterances(id).length, 1);
+  assert.ok(notes.tldr);
+  assert.equal(talktime[0].displayName, 'Alice');
+});
+
+test('processMeeting marks transcription_failed when every track fails (no partial results)', async () => {
+  const { db, id } = seed();
+  await assert.rejects(processMeeting(db, id, {
+    tracks,
+    cfg: { summarizerProvider: 'fake' },
+    summarizer: new FakeSummarizer(),
+    transcribe: async () => ({ utterances: [], failures: [{ userId: 'u1', displayName: 'Alice', error: 'sidecar down' }] }),
+    deliver: async () => {},
+  }), /All 1 track\(s\) failed transcription/);
+  assert.equal(db.getMeeting(id).status, 'transcription_failed');
+  assert.equal(db.listUtterances(id).length, 0);
+});
+
 test('processMeeting marks summary_failed when summarizer throws', async () => {
   const { db, id } = seed();
   const boom = { summarize: async () => { throw new Error('429'); } };
@@ -49,7 +83,7 @@ test('processMeeting marks summary_failed when summarizer throws', async () => {
     tracks,
     cfg: { summarizerProvider: 'fake' },
     summarizer: boom,
-    transcribe: async () => [{ userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'hi' }],
+    transcribe: async () => ({ utterances: [{ userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'hi' }], failures: [] }),
     deliver: async () => {},
   }), /429/);
   assert.equal(db.getMeeting(id).status, 'summary_failed');

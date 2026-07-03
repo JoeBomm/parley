@@ -12,10 +12,33 @@ export async function processMeeting(db, meetingId, opts) {
   db.setMeetingStatus(meetingId, 'processing');
 
   let utterances;
+  let failures = [];
   try {
-    utterances = await transcribe(opts.tracks, opts.cfg);
+    const result = await transcribe(opts.tracks, opts.cfg);
+    // transcribeTracks returns { utterances, failures }, but opts.transcribe
+    // is an injectable seam other callers/tests still use to return a bare
+    // utterances array — accept both shapes.
+    if (Array.isArray(result)) {
+      utterances = result;
+    } else {
+      utterances = result.utterances;
+      failures = result.failures || [];
+    }
   } catch (err) {
     db.setMeetingStatus(meetingId, 'transcription_failed');
+    err.userMessage = `Transcription failed — the STT sidecar may be down or unreachable. (${err.message})`;
+    throw err;
+  }
+
+  // A2: one or more tracks failing STT must not sink a meeting that
+  // otherwise has usable transcript — only bail out when every track
+  // failed and nothing came through.
+  if (failures.length > 0) {
+    console.warn(`[orchestrator] ${failures.length} track(s) failed transcription for meeting ${meetingId}`);
+  }
+  if (utterances.length === 0 && failures.length > 0) {
+    db.setMeetingStatus(meetingId, 'transcription_failed');
+    const err = new Error(`All ${failures.length} track(s) failed transcription`);
     err.userMessage = `Transcription failed — the STT sidecar may be down or unreachable. (${err.message})`;
     throw err;
   }
