@@ -31,6 +31,45 @@ def test_transcribe_returns_text(monkeypatch):
     assert body["text"] == "hello world"
     assert body["words"][0]["word"] == "hello"
 
+def reset_state():
+    _state.update(model=None, model_name=None, device=None, compute=None)
+
+def test_auto_falls_back_to_cpu_when_cuda_fails(monkeypatch):
+    reset_state()
+    attempts = []
+    def fake_ctor(name, device, compute_type):
+        attempts.append((device, compute_type))
+        if device == "cuda":
+            raise RuntimeError("no CUDA runtime")
+        return FakeModel()
+    monkeypatch.setattr("server.WhisperModel", fake_ctor)
+    import server
+    server.get_model("small")
+    assert attempts == [("cuda", "float16"), ("cpu", "int8")]
+    assert _state["device"] == "cpu" and _state["compute"] == "int8"
+
+def test_working_device_is_cached_across_rebuilds(monkeypatch):
+    reset_state()
+    attempts = []
+    def fake_ctor(name, device, compute_type):
+        attempts.append(device)
+        if device == "cuda":
+            raise RuntimeError("no CUDA runtime")
+        return FakeModel()
+    monkeypatch.setattr("server.WhisperModel", fake_ctor)
+    import server
+    server.get_model("small")
+    server.get_model("large")  # model-name change forces a rebuild
+    assert attempts == ["cuda", "cpu", "cpu"]  # cuda tried exactly once
+
+def test_health_reports_device_and_compute(monkeypatch):
+    reset_state()
+    monkeypatch.setattr("server.WhisperModel", lambda name, device, compute_type: FakeModel())
+    import server
+    server.get_model("small")
+    body = TestClient(app).get("/health").json()
+    assert body["device"] == "cuda" and body["compute"] == "float16"
+
 def test_transcribe_rebuilds_model_on_name_change(monkeypatch):
     # A model is warm under a different name; a request for "small" must rebuild.
     _state["model"] = FakeModel()

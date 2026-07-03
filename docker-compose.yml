@@ -3,7 +3,8 @@
 #
 # Two services share a private network. The bot talks to the STT sidecar over
 # that network; only the web dashboard is published to the host, and ONLY on
-# 127.0.0.1 (it has no auth — never expose it to the internet without a proxy).
+# 127.0.0.1. The dashboard ships with login (first boot creates the admin user);
+# still put a TLS proxy in front before exposing it to the internet.
 services:
   sidecar:
     build:
@@ -27,6 +28,16 @@ services:
     # Not published to the host — only the bot reaches it over the compose network.
     expose:
       - "8000"
+    # GPU transcription (5-15x faster): uncomment the block below. Requires the
+    # NVIDIA Container Toolkit on the host and a CUDA-enabled sidecar image
+    # (cuDNN/cuBLAS); the server auto-falls-back to cpu/int8 if CUDA init fails.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
 
   bot:
     build:
