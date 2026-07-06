@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from './AuthContext.jsx';
 import { LiveProvider } from './LiveContext.jsx';
 import Layout from './components/Layout.jsx';
 import Login from './pages/Login.jsx';
+import ForcePasswordChange from './pages/ForcePasswordChange.jsx';
 import Onboarding from './pages/Onboarding.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Live from './pages/Live.jsx';
@@ -62,11 +63,26 @@ function Shell() {
 // Auth gate: show the login screen until a session exists, then mount the
 // system-status provider + dashboard shell. If the backend has no auth routes
 // (an older server still running), authEnabled is false and we run open so the
-// dashboard never gets trapped behind a login it can't satisfy.
+// dashboard never gets trapped behind a login it can't satisfy. A transient
+// /auth/me failure shows a retry card rather than failing open.
 function Gate() {
-  const { user, authEnabled, loading } = useAuth();
+  const { user, authEnabled, loading, error, refresh } = useAuth();
   if (loading) return <Spinner />;
+  if (error) {
+    return (
+      <div className="min-h-screen grid place-items-center bg-bg text-ink p-6">
+        <div className="card p-7 max-w-[400px] w-full text-center">
+          <h1 className="font-display text-lg font-extrabold mb-1">Can't reach the server</h1>
+          <p className="text-sm text-muted mb-5">{error}</p>
+          <button onClick={refresh} className="btn btn-primary !py-2.5 w-full justify-center">Retry</button>
+        </div>
+      </div>
+    );
+  }
   if (authEnabled && !user) return <Login />;
+  // The API is locked until the seeded default password is changed; force it
+  // here so the dashboard never mounts against a 403-ing backend.
+  if (user?.mustChangePassword) return <ForcePasswordChange />;
   return (
     <SystemProvider>
       <Shell />

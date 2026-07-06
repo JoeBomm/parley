@@ -20,3 +20,66 @@ test('TrackRegistry isActive prevents duplicate begin', () => {
   assert.equal(reg.isActive('u1'), true);
   assert.equal(reg.isActive('u2'), false);
 });
+
+// ── attachCapture wiring: listener detach + onSpeaker (needs fakes) ────────────
+import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { attachCapture } from '../src/voice/capture.js';
+
+// Minimal stand-ins for the discord.js voice receiver + guild so we can drive
+// speaking-start events deterministically without a live connection. subscribe
+// returns a stream that emits 'end' on the next tick so tracks finish cleanly.
+function fakeConnection() {
+  const speaking = new EventEmitter();
+  return {
+    receiver: {
+      speaking,
+      subscribe() {
+        const s = new EventEmitter();
+        s.pipe = () => s;            // opusStream.pipe(decoder).pipe(out)
+        s.destroy = () => {};
+        setImmediate(() => s.emit('end'));
+        return s;
+      },
+    },
+  };
+}
+function fakeGuild(members) {
+  return { members: { cache: { get: (id) => members[id] } } };
+}
+
+test('stopAll detaches the speaking listener so post-stop speech is ignored', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'parley-cap-'));
+  try {
+    const connection = fakeConnection();
+    const guild = fakeGuild({ u1: { displayName: 'Alice', user: { bot: false } } });
+    const { TrackRegistry } = await import('../src/voice/capture.js');
+    const registry = new TrackRegistry();
+    const { stopAll } = attachCapture({ connection, guild, audioDir: dir, registry });
+
+    await stopAll();
+    // A speaking-start AFTER stopAll must not open a new (untracked) stream.
+    connection.receiver.speaking.emit('start', 'u1');
+    await new Promise((r) => setImmediate(r));
+    assert.equal(registry.isActive('u1'), false);
+    assert.equal(registry.list().length, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('onSpeaker fires for a member who first speaks (latecomer attendee capture)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'parley-cap2-'));
+  try {
+    const connection = fakeConnection();
+    const guild = fakeGuild({ u9: { displayName: 'Latecomer', user: { bot: false } } });
+    const { TrackRegistry } = await import('../src/voice/capture.js');
+    const registry = new TrackRegistry();
+    const seen = [];
+    attachCapture({ connection, guild, audioDir: dir, registry, onSpeaker: (id, name) => seen.push([id, name]) });
+
+    connection.receiver.speaking.emit('start', 'u9');
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(seen, [['u9', 'Latecomer']]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

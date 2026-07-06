@@ -25,6 +25,23 @@ if (webEnabled) {
   const host = process.env.WEB_UI_HOST || '127.0.0.1';
   startWebServer({ db, bot, sidecar, port, host });
   console.log(`[web] dashboard on http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`);
+  // Loud warning if we're reachable off-box while an account still uses the
+  // seeded default password — that combination is a full-takeover risk.
+  if (host !== '127.0.0.1' && host !== 'localhost' && defaultPasswordActive(db)) {
+    console.warn(
+      `[web] ⚠ SECURITY: the dashboard is bound to ${host} (not localhost) and an account still uses the\n` +
+      `      default password. Change it immediately, and only expose the dashboard behind a TLS proxy.`
+    );
+  }
+}
+
+// True when any admin still carries the seeded default password (must change).
+function defaultPasswordActive(database) {
+  try {
+    return database.sql.prepare(
+      `SELECT COUNT(*) AS c FROM users WHERE is_admin = 1 AND must_change_password = 1`
+    ).get().c > 0;
+  } catch { return false; }
 }
 
 // Auto-start the local sidecar when it's the active transcription backend, so a

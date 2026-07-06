@@ -1,6 +1,13 @@
+// Optional hook the app installs so a 401 anywhere (an expired/cleared session)
+// can drop the UI back to the login screen instead of surfacing a raw
+// "Not authenticated" error string on whatever page the user was on.
+let onUnauthorized = null;
+export function setUnauthorizedHandler(fn) { onUnauthorized = fn; }
+
 const json = async (r) => {
   // Surface auth failures distinctly so the app can redirect to /login.
   if (r.status === 401) {
+    if (onUnauthorized) { try { onUnauthorized(); } catch { /* ignore */ } }
     const err = new Error('Not authenticated');
     err.status = 401;
     return Promise.reject(err);

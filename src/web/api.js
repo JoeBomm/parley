@@ -286,7 +286,8 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
       const secrets = await setProviderKey(provider, value, { env });
       res.json({ ok: true, secrets, providers: availableProviders(env) });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      // Validation failures (control chars in the key) are the client's fault.
+      res.status(400).json({ error: e.message });
     }
   });
 
@@ -323,8 +324,14 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
       if (typeof req.body?.[k] === 'string') patch[k] = req.body[k];
     }
     if (Object.keys(patch).length === 0) return res.status(400).json({ error: 'No recognized settings to update.' });
+    let connection;
     try {
-      const connection = await setConnection(patch, { env });
+      connection = await setConnection(patch, { env });
+    } catch (e) {
+      // Invalid input (bad STT URL, control chars) → 400, not a server error.
+      return res.status(400).json({ error: e.message });
+    }
+    try {
       let botResult = null;
       // Restart the bot when Discord creds changed and we manage it.
       if (bot && (patch.discordToken !== undefined || patch.discordClientId !== undefined)) {

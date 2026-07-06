@@ -4,19 +4,22 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { openDb } from '../src/store/db.js';
 import { installUsers } from '../src/store/users.js';
-import { authRouter, attachUser, requireAuth } from '../src/web/auth.js';
+import { authRouter, attachUser, requireAuth, requirePasswordChanged, sameOrigin } from '../src/web/auth.js';
 
 // Mount the auth router exactly like the real server: attachUser resolves the
 // cookie, the auth routes are public, and a protected probe stands in for the
-// rest of the API.
-function appWith(db, { trustProxy = false, now } = {}) {
+// rest of the API. `gated` mirrors the production stack (same-origin + password
+// change gate) for the tests that exercise those layers.
+function appWith(db, { trustProxy = false, now, gated = false } = {}) {
   const users = installUsers(db);
   const app = express();
   if (trustProxy) app.set('trust proxy', true);
   app.use(express.json());
   app.use(attachUser(users));
+  if (gated) app.use('/api', sameOrigin);
   app.use('/api', authRouter(now ? { users, now } : { users }));
-  app.use('/api', requireAuth(users), (req, res) => res.json({ ok: true, user: req.user }));
+  const gate = gated ? [requirePasswordChanged(users)] : [];
+  app.use('/api', requireAuth(users), ...gate, (req, res) => res.json({ ok: true, user: req.user }));
   return { app, users };
 }
 
@@ -95,14 +98,14 @@ test('admin can create a user who can then log in', async () => {
   const { base, close } = await listen(appWith(db).app);
   try {
     const cookie = cookieOf(await jpost(base, '/api/auth/login', { username: 'admin', password: 'admin' }));
-    const created = await jpost(base, '/api/users', { username: 'jane', email: 'jane@x.com', password: 'pw1234' }, cookie);
+    const created = await jpost(base, '/api/users', { username: 'jane', email: 'jane@x.com', password: 'pw123456' }, cookie);
     assert.equal(created.status, 201);
 
     const list = await (await fetch(`${base}/api/users`, { headers: { cookie } })).json();
     assert.equal(list.users.length, 2);
 
     // The new user can authenticate and is not an admin.
-    const janeLogin = await jpost(base, '/api/auth/login', { username: 'jane', password: 'pw1234' });
+    const janeLogin = await jpost(base, '/api/auth/login', { username: 'jane', password: 'pw123456' });
     assert.equal(janeLogin.status, 200);
     assert.equal((await janeLogin.json()).user.isAdmin, false);
   } finally { close(); }
@@ -140,21 +143,21 @@ test('the last admin cannot be demoted or deleted', async () => {
 test('admin password reset for another user revokes their sessions', async () => {
   const db = openDb(':memory:');
   const { app, users } = appWith(db);
-  const jane = users.createUser({ username: 'jane', password: 'pw1234' });
+  const jane = users.createUser({ username: 'jane', password: 'pw123456' });
   const { base, close } = await listen(app);
   try {
-    const janeCookie = cookieOf(await jpost(base, '/api/auth/login', { username: 'jane', password: 'pw1234' }));
+    const janeCookie = cookieOf(await jpost(base, '/api/auth/login', { username: 'jane', password: 'pw123456' }));
     // Jane is logged in.
     assert.equal((await fetch(`${base}/api/anything`, { headers: { cookie: janeCookie } })).status, 200);
 
     const adminCookie = cookieOf(await jpost(base, '/api/auth/login', { username: 'admin', password: 'admin' }));
-    const reset = await jpost(base, `/api/users/${jane.id}/password`, { password: 'fresh1' }, adminCookie);
+    const reset = await jpost(base, `/api/users/${jane.id}/password`, { password: 'fresh123' }, adminCookie);
     assert.equal(reset.status, 200);
 
     // Jane's old session is dead; her old password no longer works; the new one does.
     assert.equal((await fetch(`${base}/api/anything`, { headers: { cookie: janeCookie } })).status, 401);
-    assert.equal((await jpost(base, '/api/auth/login', { username: 'jane', password: 'pw1234' })).status, 401);
-    assert.equal((await jpost(base, '/api/auth/login', { username: 'jane', password: 'fresh1' })).status, 200);
+    assert.equal((await jpost(base, '/api/auth/login', { username: 'jane', password: 'pw123456' })).status, 401);
+    assert.equal((await jpost(base, '/api/auth/login', { username: 'jane', password: 'fresh123' })).status, 200);
   } finally { close(); }
 });
 
@@ -251,5 +254,84 @@ test('a different username on the same IP is not locked out', async () => {
     // Same IP, different username — unaffected.
     assert.equal((await jpost(base, '/api/auth/login', { username: 'jane', password: 'wrong' })).status, 401);
     assert.equal((await jpost(base, '/api/auth/login', { username: 'jane', password: 'pw1234' })).status, 200);
+  } finally { close(); }
+});
+
+// ── Default-password API gate ─────────────────────────────────────────────────
+
+test('the default-password admin is blocked from the API until it changes', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWith(db, { gated: true }).app);
+  try {
+    const cookie = cookieOf(await jpost(base, '/api/auth/login', { username: 'admin', password: 'admin' }));
+    // Data/system probe is 403'd while must_change_password is set...
+    const gated = await fetch(`${base}/api/anything`, { headers: { cookie } });
+    assert.equal(gated.status, 403);
+    assert.equal((await gated.json()).code, 'PASSWORD_CHANGE_REQUIRED');
+    // ...but the password route itself stays reachable so they can fix it.
+    const changed = await jpost(base, '/api/auth/password', { newPassword: 'a-real-password' }, cookie);
+    assert.equal(changed.status, 200);
+    // A fresh session is issued by the change; use it (the old one was revoked).
+    const newCookie = cookieOf(changed);
+    assert.equal((await fetch(`${base}/api/anything`, { headers: { cookie: newCookie } })).status, 200);
+  } finally { close(); }
+});
+
+test('changing the password revokes other sessions and re-issues the current one', async () => {
+  const db = openDb(':memory:');
+  const { app, users } = appWith(db);
+  users.createUser({ username: 'jane', password: 'pw123456' });
+  const { base, close } = await listen(app);
+  try {
+    // Two concurrent sessions for jane.
+    const a = cookieOf(await jpost(base, '/api/auth/login', { username: 'jane', password: 'pw123456' }));
+    const b = cookieOf(await jpost(base, '/api/auth/login', { username: 'jane', password: 'pw123456' }));
+    const changed = await jpost(base, '/api/auth/password', { currentPassword: 'pw123456', newPassword: 'pw-new-123' }, a);
+    assert.equal(changed.status, 200);
+    const reissued = cookieOf(changed);
+    // The other session (b) is dead; the reissued cookie for (a) still works.
+    assert.equal((await fetch(`${base}/api/anything`, { headers: { cookie: b } })).status, 401);
+    assert.equal((await fetch(`${base}/api/anything`, { headers: { cookie: reissued } })).status, 200);
+  } finally { close(); }
+});
+
+test('password change enforces the 8-char minimum', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWith(db).app);
+  try {
+    const cookie = cookieOf(await jpost(base, '/api/auth/login', { username: 'admin', password: 'admin' }));
+    const tooShort = await jpost(base, '/api/auth/password', { newPassword: 'short' }, cookie);
+    assert.equal(tooShort.status, 400);
+    assert.match((await tooShort.json()).error, /at least 8/);
+  } finally { close(); }
+});
+
+// ── CSRF: same-origin guard ───────────────────────────────────────────────────
+
+test('a cross-origin state-changing request is refused', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWith(db, { gated: true }).app);
+  try {
+    // Cross-site POST carries a foreign Origin; the guard rejects it before auth.
+    const res = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'https://evil.example' },
+      body: JSON.stringify({ username: 'admin', password: 'admin' }),
+    });
+    assert.equal(res.status, 403);
+  } finally { close(); }
+});
+
+test('a same-origin state-changing request passes the guard', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWith(db, { gated: true }).app);
+  try {
+    const host = base.replace('http://', '');
+    const res = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, host },
+      body: JSON.stringify({ username: 'admin', password: 'admin' }),
+    });
+    assert.equal(res.status, 200);
   } finally { close(); }
 });

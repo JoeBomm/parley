@@ -5,23 +5,28 @@ import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { apiRouter } from './api.js';
 import { installUsers } from '../store/users.js';
-import { authRouter, attachUser, requireAuth } from './auth.js';
+import { authRouter, attachUser, requireAuth, requirePasswordChanged, sameOrigin } from './auth.js';
 
 const DIST = join(dirname(fileURLToPath(import.meta.url)), '../../web/dist');
 
 export function createWebServer({ db, bot = null, client = null, sidecar = null }) {
   const app = express();
-  // Honor X-Forwarded-Proto so secure cookies work behind a reverse proxy.
-  app.set('trust proxy', true);
+  // Trust only the loopback proxy so req.secure / req.ip reflect a *local*
+  // reverse proxy's X-Forwarded-* headers. Trusting every hop (`true`) let any
+  // direct client spoof X-Forwarded-For and dodge the per-IP login rate limit.
+  // Override with TRUSTED_PROXY when a non-loopback proxy fronts the app.
+  app.set('trust proxy', process.env.TRUSTED_PROXY || 'loopback');
   app.use(express.json());
 
   // Auth: seed users (default admin on first run) and resolve the session
-  // cookie for every request. Login/logout/me are public; everything else under
-  // /api needs a session.
+  // cookie for every request. Login/logout/me/password are public (or self-only)
+  // and mounted first; everything else under /api needs a session, a same-origin
+  // request (CSRF guard), and an account that has moved off the default password.
   const users = installUsers(db);
   app.use(attachUser(users));
+  app.use('/api', sameOrigin);
   app.use('/api', authRouter({ users }));
-  app.use('/api', requireAuth(users), apiRouter({ db, bot, client, sidecar }));
+  app.use('/api', requireAuth(users), requirePasswordChanged(users), apiRouter({ db, bot, client, sidecar }));
 
   if (existsSync(DIST)) {
     app.use(express.static(DIST));

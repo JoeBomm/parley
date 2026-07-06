@@ -13,6 +13,9 @@
 import { Router } from 'express';
 
 const COOKIE = 'parley_session';
+// Minimum password length, enforced on every set/change/reset path. Kept modest
+// for a self-hosted tool but well above the old 4-char floor.
+export const PASSWORD_MIN = 8;
 
 // Minimal cookie parser — we only need our one session cookie, so no dep.
 function readCookie(req, name) {
@@ -127,6 +130,42 @@ export function requireAdmin(req, res, next) {
   next();
 }
 
+// Blocks the data/system API while the logged-in account still uses its seeded
+// default password (must_change_password). Auth routes (login/logout/me/password)
+// are mounted *before* this, so the user can still authenticate and set a real
+// password — they just can't touch anything else until they do. Without this, a
+// reachable instance with the default admin/admin is fully operable by anyone.
+// Permissive when no user is attached (standalone/test server), mirroring
+// requireAdmin.
+export function requirePasswordChanged(_users) {
+  return (req, res, next) => {
+    if (req.user && req.user.mustChangePassword) {
+      return res.status(403).json({
+        error: 'Set a new password before using the dashboard.',
+        code: 'PASSWORD_CHANGE_REQUIRED',
+      });
+    }
+    next();
+  };
+}
+
+// Same-origin guard for state-changing requests: browsers always attach an
+// Origin header on cross-site POST/PUT/PATCH/DELETE, so rejecting a mismatched
+// Origin blocks CSRF without tokens. Requests with no Origin (same-origin GETs,
+// non-browser API clients, tests) are allowed — they can't be CSRF vectors.
+export function sameOrigin(req, res, next) {
+  const method = req.method.toUpperCase();
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return next();
+  const origin = req.headers.origin;
+  if (!origin) return next();
+  let originHost;
+  try { originHost = new URL(origin).host; } catch { return res.status(403).json({ error: 'Bad Origin.' }); }
+  if (originHost !== req.headers.host) {
+    return res.status(403).json({ error: 'Cross-origin request refused.' });
+  }
+  next();
+}
+
 export function authRouter({ users, now = () => Date.now(), loginLimiter = createLoginLimiter({ now }) }) {
   const r = Router();
 
@@ -169,10 +208,15 @@ export function authRouter({ users, now = () => Date.now(), loginLimiter = creat
 
   // Change your own password. Requires the current password unless the account
   // is flagged must_change_password (the seeded default admin's first change).
+  // On success every other session for this user is revoked (a password change
+  // is the response to a suspected compromise) and the current request gets a
+  // fresh session cookie so the user stays logged in here.
   r.post('/auth/password', requireAuth(users), (req, res) => {
     const current = String(req.body?.currentPassword ?? '');
     const next = String(req.body?.newPassword ?? '');
-    if (next.length < 4) return res.status(400).json({ error: 'New password must be at least 4 characters.' });
+    if (next.length < PASSWORD_MIN) {
+      return res.status(400).json({ error: `New password must be at least ${PASSWORD_MIN} characters.` });
+    }
     const row = users.getUserByUsername(req.user.username);
     const mustChange = !!row?.must_change_password;
     if (!mustChange) {
@@ -181,6 +225,9 @@ export function authRouter({ users, now = () => Date.now(), loginLimiter = creat
       }
     }
     users.setPassword(req.user.id, next);
+    users.deleteUserSessions(req.user.id); // revoke all sessions, including this one
+    const { token, expiresAt } = users.createSession(req.user.id); // re-issue for the current request
+    setSessionCookie(res, token, expiresAt, req.secure);
     res.json({ ok: true, user: users.getUser(req.user.id) });
   });
 
@@ -195,7 +242,7 @@ export function authRouter({ users, now = () => Date.now(), loginLimiter = creat
     const password = String(req.body?.password ?? '');
     const isAdmin = !!req.body?.isAdmin;
     if (!username || !password) return res.status(400).json({ error: 'Username and password are required.' });
-    if (password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters.' });
+    if (password.length < PASSWORD_MIN) return res.status(400).json({ error: `Password must be at least ${PASSWORD_MIN} characters.` });
     try {
       const user = users.createUser({ username, email, password, isAdmin });
       res.status(201).json({ ok: true, user });
@@ -209,7 +256,7 @@ export function authRouter({ users, now = () => Date.now(), loginLimiter = creat
     const id = Number(req.params.id);
     if (!users.getUser(id)) return res.status(404).json({ error: 'User not found.' });
     const password = String(req.body?.password ?? '');
-    if (password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters.' });
+    if (password.length < PASSWORD_MIN) return res.status(400).json({ error: `Password must be at least ${PASSWORD_MIN} characters.` });
     users.setPassword(id, password);
     users.deleteUserSessions(id); // force re-login with the new password
     res.json({ ok: true });

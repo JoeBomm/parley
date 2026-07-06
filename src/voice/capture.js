@@ -22,9 +22,12 @@ export class TrackRegistry {
 
 // Side-effecting wiring used by MeetingManager. Not unit-tested (needs a live
 // voice connection); validated by the manual integration checklist.
-export function attachCapture({ connection, guild, audioDir, registry, now = () => Date.now() }) {
+// `onSpeaker(userId, displayName)` fires the first time a member speaks, so the
+// caller can record latecomers who joined after the meeting started.
+export function attachCapture({ connection, guild, audioDir, registry, now = () => Date.now(), onSpeaker = null }) {
   mkdirSync(audioDir, { recursive: true });
-  connection.receiver.speaking.on('start', (userId) => {
+
+  const onStart = (userId) => {
     if (registry.isActive(userId)) return;
     const member = guild.members.cache.get(userId);
     if (!member || member.user.bot) return;
@@ -45,16 +48,25 @@ export function attachCapture({ connection, guild, audioDir, registry, now = () 
     };
 
     registry.begin(userId, member.displayName, startMs, pcmPath, { opusStream, decoder, out, end });
+    // Record anyone who actually speaks as an attendee (covers latecomers who
+    // joined after the start-of-meeting snapshot). Idempotent downstream.
+    if (onSpeaker) { try { onSpeaker(userId, member.displayName); } catch { /* ignore */ } }
 
     opusStream.on('end', end);
     opusStream.on('error', end);
     decoder.on('error', end);
-  });
+  };
+
+  connection.receiver.speaking.on('start', onStart);
 
   return {
     // End every still-active speaking turn and wait for its PCM to flush, so a
     // manual /leave or auto-leave never loses the final in-flight utterance.
+    // Detach the listener FIRST so a new speaking-start between here and the
+    // connection being destroyed can't open an untracked stream (leaked handle
+    // + orphan .pcm + lost audio, since registry.list() was already snapshotted).
     async stopAll() {
+      connection.receiver.speaking.off('start', onStart);
       const actives = [...registry.active.values()];
       await Promise.all(actives.map((t) => new Promise((resolve) => {
         if (t.out.writableFinished) { resolve(); return; }

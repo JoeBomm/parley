@@ -43,7 +43,7 @@ function PasswordCard({ user, onChanged }) {
     e.preventDefault();
     setErr(null); setMsg(null);
     if (next !== confirm) { setErr('New passwords do not match.'); return; }
-    if (next.length < 4) { setErr('New password must be at least 4 characters.'); return; }
+    if (next.length < 8) { setErr('New password must be at least 8 characters.'); return; }
     setBusy(true);
     try {
       await api.changePassword(current, next);
@@ -177,10 +177,10 @@ function UserRow({ u, me, onChanged }) {
       </div>
       {resetting && (
         <div className="flex items-center gap-2 mt-3 ml-11">
-          <input className="input flex-1" type="password" value={pw} placeholder="New password (min 4 chars)"
+          <input className="input flex-1" type="password" value={pw} placeholder="New password (min 8 chars)"
             onChange={(e) => setPw(e.target.value)} autoComplete="new-password" />
           <button onClick={() => act(async () => { await api.resetUserPassword(u.id, pw); setPw(''); setResetting(false); })}
-            disabled={busy || pw.length < 4} className="btn btn-primary !py-2">Save</button>
+            disabled={busy || pw.length < 8} className="btn btn-primary !py-2">Save</button>
           <button onClick={() => { setResetting(false); setPw(''); }} className="btn btn-ghost !py-2">Cancel</button>
         </div>
       )}

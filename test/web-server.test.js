@@ -4,15 +4,25 @@ import assert from 'node:assert/strict';
 import { openDb } from '../src/store/db.js';
 import { startWebServer } from '../src/web/server.js';
 
-// Log in as the seeded default admin and return the session cookie so we can
-// hit the now-protected API in these end-to-end checks.
+// Log in as the seeded default admin and immediately move off the default
+// password (the API is gated until that happens), returning the fresh session
+// cookie so we can hit the now-protected API in these end-to-end checks.
 async function loginCookie(base) {
   const r = await fetch(`${base}/api/auth/login`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: 'admin', password: 'admin' }),
   });
   assert.equal(r.status, 200);
-  return r.headers.get('set-cookie').split(';')[0];
+  let cookie = r.headers.get('set-cookie').split(';')[0];
+  const changed = await fetch(`${base}/api/auth/password`, {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ newPassword: 'admin-secret-1' }),
+  });
+  assert.equal(changed.status, 200);
+  // Password change rotates the session; use the reissued cookie.
+  const rotated = changed.headers.get('set-cookie');
+  if (rotated) cookie = rotated.split(';')[0];
+  return cookie;
 }
 
 test('startWebServer binds 127.0.0.1 and serves api + backfills (authed)', async () => {
@@ -28,7 +38,15 @@ test('startWebServer binds 127.0.0.1 and serves api + backfills (authed)', async
     // Unauthenticated requests are rejected.
     const noauth = await fetch(`${base}/api/guilds/g1/todos`);
     assert.equal(noauth.status, 401);
-    // After login the backfilled todo is visible.
+    // The default-password admin is blocked from the data API until it changes.
+    const preChange = await fetch(`${base}/api/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'admin' }),
+    });
+    const defCookie = preChange.headers.get('set-cookie').split(';')[0];
+    const gated = await fetch(`${base}/api/guilds/g1/todos`, { headers: { cookie: defCookie } });
+    assert.equal(gated.status, 403);
+    // After login + password change the backfilled todo is visible.
     const cookie = await loginCookie(base);
     const todos = await (await fetch(`${base}/api/guilds/g1/todos`, { headers: { cookie } })).json();
     assert.equal(todos.length, 1); // backfill ran on start

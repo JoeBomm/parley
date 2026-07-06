@@ -37,8 +37,11 @@ RUN mkdir -p /data && chown -R node:node /data /app
 USER node
 VOLUME ["/data"]
 
-# Web dashboard (enabled by default in the container; host maps 127.0.0.1 only).
-ENV WEB_UI=1 WEB_UI_PORT=3000 WEB_UI_HOST=0.0.0.0
+# Web dashboard (enabled by default in the container). Bind localhost by default
+# so a bare `docker run -p 3000:3000` doesn't expose the dashboard on all
+# interfaces. docker-compose overrides WEB_UI_HOST=0.0.0.0 because it publishes
+# the port on 127.0.0.1 only; set it yourself (behind a TLS proxy) to expose it.
+ENV WEB_UI=1 WEB_UI_PORT=3000 WEB_UI_HOST=127.0.0.1
 EXPOSE 3000
 
 CMD ["node", "src/index.js"]

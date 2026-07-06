@@ -36,7 +36,10 @@ export class BotController {
       this.manager = manager;
       this.stopAndLeave = stopAndLeave;
       client.once('ready', () => { this.state = 'ready'; });
-      client.on('error', (e) => { this.error = e.message; });
+      // A connection/login error (including a rejected login re-emitted by
+      // bot.js) marks the controller errored so the UI stops showing 'ready'
+      // for a dead client. 'ready' can still recover us on reconnect.
+      client.on('error', (e) => { this.state = 'error'; this.error = e.message; });
       // discord.js emits 'invalidated' / login rejects on a bad token.
       client.once('invalidated', () => { this.state = 'error'; this.error = 'Discord session invalidated (bad token?).'; });
       return { ok: true, state: this.state };
@@ -47,8 +50,17 @@ export class BotController {
     }
   }
 
-  /** Tear down the live client (best-effort). */
+  /** Tear down the live client (best-effort). Flushes any in-progress recordings
+   *  first so a UI-triggered restart doesn't strand meetings in 'recording'. */
   async stop() {
+    // Stop active recordings so their audio is flushed and the pipeline runs,
+    // instead of leaving 'recording' rows that only a later orphan sweep fixes.
+    if (this.manager && typeof this.manager.listActive === 'function') {
+      const active = this.manager.listActive();
+      await Promise.all(active.map((s) =>
+        this.stopMeeting(s.guildId, s.channelId).catch(() => {})
+      ));
+    }
     if (this.client) {
       try { await this.client.destroy(); } catch { /* ignore */ }
     }

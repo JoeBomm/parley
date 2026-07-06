@@ -41,7 +41,12 @@ export function startBot({ db, audioRoot }) {
     db, audioRoot,
     startCapture: ({ meetingId, connection, guild, audioDir }) => {
       const registry = new TrackRegistry();
-      const { stopAll } = attachCapture({ connection, guild, audioDir, registry });
+      const { stopAll } = attachCapture({
+        connection, guild, audioDir, registry,
+        // Record latecomers the moment they first speak (INSERT OR IGNORE keeps
+        // it idempotent), so attendees isn't limited to the start snapshot.
+        onSpeaker: (userId, displayName) => db.addAttendee(meetingId, userId, displayName),
+      });
       return { registry, stopAll };
     },
     finalize: async (meetingId, tracks, session) => {
@@ -367,6 +372,12 @@ export function startBot({ db, audioRoot }) {
     }
   });
 
-  client.login(config.discordToken);
-  return { client, manager, stopAndLeave };
+  // Log in. A bad/expired token rejects this promise; without a catch that
+  // becomes an unhandled rejection and kills the process (taking the web
+  // dashboard down with it — the very tool meant to fix the token). Surface it
+  // through the client's 'error' channel instead so the controller can report it.
+  const loginResult = client.login(config.discordToken).catch((err) => {
+    client.emit('error', err instanceof Error ? err : new Error(String(err)));
+  });
+  return { client, manager, stopAndLeave, loginResult };
 }

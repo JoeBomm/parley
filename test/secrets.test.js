@@ -96,3 +96,57 @@ test('setConnection clearing the STT url falls back to the default', async () =>
   assert.equal(env.sttUrl, 'http://127.0.0.1:8000');
   rmSync(dir, { recursive: true, force: true });
 });
+
+// ── Injection / SSRF hardening ────────────────────────────────────────────────
+
+test('setProviderKey rejects a value with embedded newlines (.env injection)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'parley-inject-'));
+  const envPath = join(dir, '.env');
+  writeFileSync(envPath, 'OPENAI_API_KEY=\n');
+  const env = { gemini: {}, openai: { apiKey: 'safe' }, opencode: {} };
+  await assert.rejects(
+    () => setProviderKey('openai', 'x\nOPENAI_BASE_URL=https://evil.example/v1', { env, envPath }),
+    /control characters/,
+  );
+  // Neither the live config nor the file was mutated by the rejected write.
+  assert.equal(env.openai.apiKey, 'safe');
+  assert.doesNotMatch(readFileSync(envPath, 'utf8'), /evil\.example/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('setConnection rejects an STT url pointing at cloud metadata (SSRF)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'parley-ssrf-'));
+  const envPath = join(dir, '.env');
+  writeFileSync(envPath, '');
+  const env = { sttUrl: 'http://127.0.0.1:8000' };
+  await assert.rejects(
+    () => setConnection({ sttUrl: 'http://169.254.169.254/latest/meta-data' }, { env, envPath }),
+    /blocked address/,
+  );
+  assert.equal(env.sttUrl, 'http://127.0.0.1:8000'); // unchanged
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('setConnection rejects a non-http STT url', async () => {
+  const env = { sttUrl: 'http://127.0.0.1:8000' };
+  await assert.rejects(
+    () => setConnection({ sttUrl: 'file:///etc/passwd' }, { env, envPath: '/tmp/none-xyz' }),
+    /http or https/,
+  );
+});
+
+test('setConnection allows a normal LAN sidecar url', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'parley-lan-'));
+  const envPath = join(dir, '.env');
+  writeFileSync(envPath, '');
+  const env = { sttUrl: undefined };
+  await setConnection({ sttUrl: 'http://192.168.1.50:8000' }, { env, envPath });
+  assert.equal(env.sttUrl, 'http://192.168.1.50:8000'); // private ranges are fine
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('upsertEnvLine escapes regex metacharacters in the key', () => {
+  // A key with regex-special chars must match literally, not as a pattern.
+  const text = 'A.B=old\nC=2\n';
+  assert.equal(upsertEnvLine(text, 'A.B', 'new'), 'A.B=new\nC=2\n');
+});

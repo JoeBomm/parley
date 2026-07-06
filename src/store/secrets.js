@@ -53,10 +53,49 @@ export function secretStatus(env = config) {
 export function upsertEnvLine(text, key, value) {
   const safe = String(value ?? '');
   const line = `${key}=${safe}`;
-  const re = new RegExp(`^${key}=.*$`, 'm');
+  // Escape regex metacharacters in the key so a future non-identifier key can't
+  // corrupt the match (keys are hardcoded today, but this keeps it safe).
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^${escapedKey}=.*$`, 'm');
   if (re.test(text)) return text.replace(re, line);
   const sep = text.length && !text.endsWith('\n') ? '\n' : '';
   return `${text}${sep}${line}\n`;
+}
+
+// Guard against .env injection: a value with a newline (or other control char)
+// would write extra KEY=value lines into the file, letting an attacker set
+// arbitrary env vars (e.g. redirect OPENAI_BASE_URL to exfiltrate the real key).
+// Reject rather than silently strip so the caller sees the bad input.
+function assertEnvSafe(value) {
+  if (/[\r\n\x00-\x1f]/.test(value)) {
+    throw new Error('Value contains illegal control characters.');
+  }
+}
+
+// Reject STT URLs that point at link-local / cloud-metadata / loopback-hijack
+// targets — a settable STT endpoint that we POST recorded audio to is an SSRF
+// primitive. http(s) only. Set ALLOW_REMOTE_STT=1 to permit private/remote
+// hosts (the intended self-hosted case is a LAN sidecar, so private ranges are
+// allowed by default; only the dangerous metadata/link-local ranges are blocked).
+function assertSttUrlSafe(value) {
+  if (!value) return; // clearing falls back to the default localhost sidecar
+  let url;
+  try { url = new URL(value); } catch { throw new Error('STT URL is not a valid URL.'); }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('STT URL must use http or https.');
+  }
+  if (process.env.ALLOW_REMOTE_STT === '1') return;
+  const host = url.hostname;
+  // Cloud metadata endpoints and IPv4/IPv6 link-local ranges.
+  const blocked =
+    host === '169.254.169.254' ||
+    host === 'metadata.google.internal' ||
+    /^169\.254\./.test(host) ||           // IPv4 link-local
+    /^fe80:/i.test(host) ||               // IPv6 link-local
+    host === '[::]' || host === '0.0.0.0';
+  if (blocked) {
+    throw new Error('STT URL points at a blocked address. Set ALLOW_REMOTE_STT=1 to override.');
+  }
 }
 
 /** Persist a single KEY=value to the env file (creating it if needed). */
@@ -75,6 +114,7 @@ export async function setProviderKey(provider, value, { env = config, envPath = 
   const spec = PROVIDER_SECRETS[provider];
   if (!spec) throw new Error(`Provider "${provider}" has no editable API key.`);
   const trimmed = String(value ?? '').trim();
+  assertEnvSafe(trimmed);
   spec.apply(env, trimmed || undefined);                 // 1) live
   await persistEnv(spec.env, trimmed, envPath);          // 2) persisted
   return secretStatus(env);
@@ -102,6 +142,8 @@ export async function setConnection(patch = {}, { env = config, envPath = resolv
   for (const k of keys) {
     const spec = CONNECTION_SETTINGS[k];
     const trimmed = String(patch[k] ?? '').trim();
+    assertEnvSafe(trimmed);
+    if (k === 'sttUrl') assertSttUrlSafe(trimmed);
     spec.apply(env, trimmed || undefined);
     await persistEnv(spec.env, trimmed, envPath);
   }
