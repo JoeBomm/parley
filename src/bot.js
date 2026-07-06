@@ -63,6 +63,13 @@ export function startBot({ db, audioRoot }) {
         await rm(session.audioDir, { recursive: true, force: true }).catch(() => {});
         // Nobody spoke — drop the empty meeting record entirely.
         if (result?.empty) db.deleteMeeting(meetingId);
+        // Summary succeeded but posting didn't (perms/deleted channel): the notes
+        // are safe in the dashboard and the meeting stays 'done'. Best-effort ping
+        // the origin channel so people aren't left waiting on a thread that never comes.
+        else if (result?.deliveryError) {
+          const ch = await client.channels.fetch(meeting.channel_id).catch(() => null);
+          if (ch) await ch.send(`⚠️ Meeting ${meetingId} notes are ready in the dashboard, but I couldn't post them here: ${result.deliveryError}`).catch(() => {});
+        }
       } catch (err) {
         console.error(`Meeting ${meetingId} failed:`, err.message);
         const reason = err.userMessage || err.message;

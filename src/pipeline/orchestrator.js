@@ -83,6 +83,21 @@ export async function processMeeting(db, meetingId, opts) {
   db.seedTodos(meetingId, meeting.guild_id, notes.actionItems || []);
   db.setMeetingStatus(meetingId, 'done', new Date().toISOString());
 
-  if (opts.deliver) await opts.deliver(notes, talktime, meta);
-  return { notes, talktime };
+  // Delivery is the last step and runs AFTER the summary is safely persisted, so
+  // a posting failure (missing perms, deleted channel) must not throw away a
+  // finished meeting or flip it back to a failed state — the notes already live
+  // in the dashboard. Surface it via `delivered` + `deliveryError` so callers can
+  // log it or offer a re-post, without treating the meeting as failed.
+  let delivered = false;
+  let deliveryError = null;
+  if (opts.deliver) {
+    try {
+      await opts.deliver(notes, talktime, meta);
+      delivered = true;
+    } catch (err) {
+      deliveryError = err.message || String(err);
+      console.error(`[pipeline] meeting ${meetingId} summarized but delivery failed: ${deliveryError}`);
+    }
+  }
+  return { notes, talktime, delivered, deliveryError };
 }

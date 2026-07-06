@@ -1,4 +1,7 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
 
 // Filenames live under audio/<meetingId>/, so userId+startMs is enough and avoids
 // the underscore-in-channel-name parsing bug of the old implementation.
@@ -38,9 +41,23 @@ export function wavHeader(dataLength) {
   return buf;
 }
 
+// Stream the PCM into the WAV instead of buffering the whole track in memory.
+// The header needs the data length up front, which we get from stat() (the PCM
+// is already fully written on disk by capture). A long uninterrupted speaking
+// turn can be 100+ MB; the old readFile + Buffer.concat held ~2x that in RAM.
 export async function convertPcmToWav(pcmPath, wavPath) {
-  const pcm = await readFile(pcmPath);
-  const wav = Buffer.concat([wavHeader(pcm.length), pcm]);
-  await writeFile(wavPath, wav);
+  const { size } = await stat(pcmPath);
+  const out = createWriteStream(wavPath);
+  // Concatenate the header stream and the PCM file stream into the WAV. pipeline
+  // wires up backpressure, waits for the full flush, and propagates any error
+  // (and destroys the streams) so there are no dangling handles or rejections.
+  const header = Readable.from([wavHeader(size)]);
+  await pipeline(
+    async function* () {
+      yield* header;
+      yield* createReadStream(pcmPath);
+    },
+    out,
+  );
   return wavPath;
 }

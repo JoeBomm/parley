@@ -110,3 +110,32 @@ test('processMeeting measures and stores per-stage timings on the summary row', 
   assert.ok(summary.timings.summarizeMs >= 0);
   assert.equal(summary.timings.tracks, 1);
 });
+
+test('processMeeting keeps a meeting done when delivery fails (notes still saved)', async () => {
+  const { db, id } = seed();
+  const { delivered, deliveryError } = await processMeeting(db, id, {
+    tracks,
+    cfg: { summarizerProvider: 'fake' },
+    summarizer: new FakeSummarizer(),
+    transcribe: async () => ({ utterances: [{ userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'hello team' }], failures: [] }),
+    deliver: async () => { throw new Error('missing permissions'); },
+  });
+  // Delivery threw, but the meeting is done and the summary is persisted.
+  assert.equal(db.getMeeting(id).status, 'done');
+  assert.ok(db.getSummary(id));
+  assert.equal(delivered, false);
+  assert.match(deliveryError, /missing permissions/);
+});
+
+test('processMeeting reports delivered:true on a successful post', async () => {
+  const { db, id } = seed();
+  const { delivered, deliveryError } = await processMeeting(db, id, {
+    tracks,
+    cfg: { summarizerProvider: 'fake' },
+    summarizer: new FakeSummarizer(),
+    transcribe: async () => ({ utterances: [{ userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'hi' }], failures: [] }),
+    deliver: async () => {},
+  });
+  assert.equal(delivered, true);
+  assert.equal(deliveryError, null);
+});

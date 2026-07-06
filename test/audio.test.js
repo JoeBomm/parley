@@ -49,3 +49,37 @@ test('convertPcmToWav writes a header + raw PCM bytes to wavPath', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('convertPcmToWav streams a large PCM correctly (header length + bytes)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'parley-audio-big-'));
+  try {
+    const pcmPath = join(dir, 'big.pcm');
+    const wavPath = join(dir, 'big.wav');
+    // ~5 MB — exercises the streaming path across many chunks.
+    const pcm = Buffer.alloc(5 * 1024 * 1024, 0xab);
+    await writeFile(pcmPath, pcm);
+    await convertPcmToWav(pcmPath, wavPath);
+    const out = await readFile(wavPath);
+    assert.equal(out.length, 44 + pcm.length);
+    assert.deepEqual(out.subarray(0, 44), wavHeader(pcm.length));
+    assert.equal(out.readUInt32LE(40), pcm.length); // data chunk length matches
+    assert.deepEqual(out.subarray(44, 44 + 8), pcm.subarray(0, 8));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('convertPcmToWav handles an empty PCM (silent track)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'parley-audio-empty-'));
+  try {
+    const pcmPath = join(dir, 'empty.pcm');
+    const wavPath = join(dir, 'empty.wav');
+    await writeFile(pcmPath, Buffer.alloc(0));
+    await convertPcmToWav(pcmPath, wavPath);
+    const out = await readFile(wavPath);
+    assert.equal(out.length, 44);
+    assert.equal(out.readUInt32LE(40), 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
