@@ -112,7 +112,7 @@ A fully self-hosted alternative to Otter/Fathom/Fireflies, built for Discord. Au
 - **Full web dashboard.** A local control panel to browse meetings, read notes, work the action-item list, see talk-time analytics, search transcripts, and configure everything. Connect your Discord bot and edit settings right from the browser — no editing files.
 - **Live view.** Watch in-progress recordings from the dashboard — who's in the room, elapsed time, one-click stop — and see the meeting move to a **Processing** state while it's transcribed and summarized, until the notes land.
 - **Pluggable summarizer.** Google Gemini (default, free tier), any OpenAI-compatible endpoint, or fully-offline Ollama — switch per-server with `/setup`, no restart.
-- **Local or cloud speech-to-text.** Run a warm [faster-whisper](https://github.com/SYSTRAN/faster-whisper) sidecar (fully offline, free — **uses your NVIDIA GPU automatically** when available, with CPU fallback), or point transcription at a cloud Whisper API like [OpenAI](https://platform.openai.com/docs/guides/speech-to-text). Switch per-server in Settings, no sidecar required.
+- **Local or cloud speech-to-text.** Run a warm [faster-whisper](https://github.com/SYSTRAN/faster-whisper) sidecar (fully offline, free — **uses your NVIDIA GPU automatically** when available, with CPU fallback, and **batched inference** for 1.7–2.6x throughput), or point transcription at a cloud Whisper API like [OpenAI](https://platform.openai.com/docs/guides/speech-to-text). Switch per-server in Settings, no sidecar required.
 - **Self-host in one command.** `docker compose up -d` runs the bot, the whisper sidecar, and the dashboard together. No public IP or port forwarding needed.
 - **Searchable history.** `/history`, `/summary`, `/raw`, and full-text `/search` over every past meeting, backed by SQLite FTS5.
 - **Resilient.** A failed track doesn't sink the meeting (per-track error tolerance), the bot recovers from voice disconnects, and failed transcriptions or summaries are retryable with one click from the dashboard (or the CLI).
@@ -139,7 +139,7 @@ A fully self-hosted alternative to Otter/Fathom/Fireflies, built for Discord. Au
 
 1. The bot joins a voice channel (via `/join` or automatically when 2+ humans are present) and writes each speaker's audio to its own track.
 2. When the meeting ends, the bot leaves immediately and processes in the background (the dashboard shows a **Processing** card): the orchestrator transcribes the tracks concurrently through the local sidecar, merges utterances into one timestamp-ordered, speaker-labeled transcript, and stores it in SQLite.
-3. The transcript goes to your chosen summarizer, and the structured notes are posted to a Discord thread. Audio is deleted after successful delivery. Per-stage timings (transcribe/summarize) are stored with each meeting.
+3. The transcript goes to your chosen summarizer, and the structured notes are posted to a Discord thread. Audio is deleted after a successful run; if posting to Discord fails (missing perms, deleted channel) the notes are still saved and readable in the dashboard, so nothing is lost. Per-stage timings (transcribe/summarize) are stored with each meeting.
 
 ## 🐳 Quick start (Docker)
 
@@ -182,14 +182,14 @@ Parley's bot connects **out** to Discord over a websocket, so it needs **no publ
 | **Home server / NAS** (Synology, Unraid, Proxmox) | Already-on hardware | Run the Compose stack as a normal container app. |
 | **A small VPS** (Hetzner, Fly, DigitalOcean, etc.) | No always-on box at home | A 2 vCPU / 4 GB instance handles `small`/`medium` fine. Pick one near your Discord voice region. |
 
-**Sizing the transcription:** whisper runs on your **GPU automatically** when an NVIDIA card + CUDA libs are available (5–15x faster), and falls back to CPU otherwise. On CPU, `tiny`/`base` are realtime-ish anywhere; `small` is the sweet spot on a 4-core box; `medium`/`large-v3` want a beefier CPU or the GPU. In Docker, GPU is opt-in — uncomment the `deploy` block in `docker-compose.yml` (needs the NVIDIA Container Toolkit). You can change the model per-server in Settings without redeploying.
+**Sizing the transcription:** whisper runs on your **GPU automatically** when an NVIDIA card + CUDA libs are available (5–15x faster), and falls back to CPU otherwise — the dashboard shows a **GPU / CPU badge** on the sidecar so you can tell at a glance (and warns when it's on the slow CPU path). On CPU, `tiny`/`base` are realtime-ish anywhere; `small` is the sweet spot on a 4-core box; `medium`/`large-v3` want a beefier CPU or the GPU. Batched inference is on by default (tune with `STT_BATCH_SIZE`, `0` disables). In Docker, GPU is opt-in — uncomment the `deploy` block in `docker-compose.yml` (needs the NVIDIA Container Toolkit). You can change the model per-server in Settings without redeploying.
 
 **Two ways to point at the summarizer:**
 
 - **Cloud LLM (default):** only the final transcript *text* is sent to Gemini/OpenAI. Easiest, cheapest, great quality.
 - **Fully offline:** run [Ollama](https://ollama.com) (on the host or another box) and select it in Settings. Nothing ever leaves your network.
 
-> **Security:** the dashboard requires a **login**. On first run it seeds a default `admin` / `admin` account — sign in, then change the password from **Account** (you'll be prompted to). Admins can add more users (username + optional email + password) and reset passwords; any user can change their own. Sensitive operations (API keys, Discord credentials, bot/sidecar control, deleting or merging meetings) are **admin-only**. Login is rate-limited against brute force, sessions are httpOnly cookies (marked `Secure` over https), and passwords are scrypt-hashed in the same SQLite db. The server still binds `127.0.0.1` (and, in Docker, only the host's localhost). To reach it from another machine, tunnel over SSH (`ssh -L 3000:127.0.0.1:3000 user@host`) or front it with a reverse proxy + TLS. Do **not** expose port 3000 to the internet directly.
+> **Security:** the dashboard requires a **login**. On first run it seeds a default `admin` / `admin` account — sign in, and Parley **requires you to set a new password before the dashboard unlocks** (the rest of the API is gated until you do). Admins can add more users (username + optional email + password) and reset passwords; any user can change their own. Sensitive operations (API keys, Discord credentials, bot/sidecar control, deleting or merging meetings) are **admin-only**. Login is rate-limited against brute force, requests are same-origin-checked (CSRF), sessions are httpOnly cookies (marked `Secure` over https) that are revoked when a password changes, and passwords are scrypt-hashed (8-char minimum) in the same SQLite db. The server binds `127.0.0.1` by default (and, in Docker, only the host's localhost). To reach it from another machine, tunnel over SSH (`ssh -L 3000:127.0.0.1:3000 user@host`) or front it with a reverse proxy + TLS. Do **not** expose port 3000 to the internet directly.
 
 ## 📦 Prerequisites
 
@@ -282,7 +282,7 @@ npm start
 
 > `npm start` loads `.env` automatically via Node's `--env-file` flag (Node 20+). If your shell already has empty `DISCORD_TOKEN=` etc., the `.env` values win.
 
-The bot connects to Discord **and** the web dashboard comes up at **<http://127.0.0.1:3000>** (first login `admin` / `admin`, change it on sign-in). Haven't set a Discord token yet? Open the dashboard and paste it into the first-run wizard — Parley connects and registers its slash commands live, no restart. Run headless (no dashboard) with `WEB_UI=0 npm start`.
+The bot connects to Discord **and** the web dashboard comes up at **<http://127.0.0.1:3000>** (first login `admin` / `admin`; you'll be required to set a new password before the dashboard unlocks). Haven't set a Discord token yet? Open the dashboard and paste it into the first-run wizard — Parley connects and registers its slash commands live, no restart. Run headless (no dashboard) with `WEB_UI=0 npm start`.
 
 For production, keep both processes alive with a process manager:
 
@@ -341,7 +341,7 @@ All providers return the same structured-notes shape, so output is consistent re
 
 Speech-to-text is pluggable per server. The default needs no API key; the cloud options need no Python sidecar.
 
-- **sidecar** *(default)* — local [faster-whisper](https://github.com/SYSTRAN/faster-whisper) running in its own container. Fully offline and free. Transcription runs on your **NVIDIA GPU automatically** when available (falls back to CPU; override with `STT_DEVICE=cpu|cuda` and `STT_COMPUTE`). Pick a model size from `tiny` to `large-v3-turbo`.
+- **sidecar** *(default)* — local [faster-whisper](https://github.com/SYSTRAN/faster-whisper) running in its own container. Fully offline and free. Transcription runs on your **NVIDIA GPU automatically** when available (falls back to CPU; override with `STT_DEVICE=cpu|cuda` and `STT_COMPUTE`), and uses **batched inference** for 1.7–2.6x throughput (`STT_BATCH_SIZE` tunes the batch, `0` disables). Pick a model size from `tiny` to `large-v3-turbo`.
 - **openai** — OpenAI or any OpenAI-compatible `/audio/transcriptions` endpoint. Set `OPENAI_API_KEY` (and `OPENAI_BASE_URL`). Lets you skip running the sidecar entirely.
 
 Every backend returns the same `{ text, words }` shape with word-level timestamps, so per-speaker attribution and talk-time stats work the same way regardless of provider. Switch in **Settings → Transcription** or with `/setup stt_provider:…`.
@@ -386,17 +386,21 @@ delivery).
 **Transcription, from the browser.** Settings → Transcription lets you pick the
 speech-to-text backend per server (local sidecar or OpenAI), paste the
 cloud API key inline, and choose the model. The default local **sidecar** has a
-live status pill with **Start / Stop / Restart** buttons, so you can run whisper
-locally on demand. Switching a server to a cloud API automatically stops the
-sidecar to free CPU/RAM (and starts it again when you switch back) — or toggle it
-yourself any time. (In Docker the sidecar is its own container and is managed by
-Compose, so the dashboard shows that instead of a Start button.)
+live status pill with **Start / Stop / Restart** buttons (plus a **GPU / CPU
+badge** showing the active compute backend, model, and batch size, and a warning
+when it's on the slow CPU path), so you can run whisper locally on demand.
+Switching a server to a cloud API automatically stops the sidecar to free CPU/RAM
+(and starts it again when you switch back) — or toggle it yourself any time. (In
+Docker the sidecar is its own container and is managed by Compose, so the
+dashboard shows that instead of a Start button.)
 
 **Recover failed meetings without the CLI.** If a meeting fails (the STT sidecar
 was down, or the summarizer hit a transient error), it shows up with a clear
 status and a one-click **Retry** in its reading view. Parley picks the right
 recovery automatically: re-summarize when the transcript survived, or
-re-transcribe from the saved audio when it didn't. (The `scripts/*-meeting.mjs`
+re-transcribe from the saved audio when it didn't. Each meeting can also be
+**exported** (markdown or JSON — notes plus the full transcript) from its actions
+menu for backups or sharing. (The `scripts/*-meeting.mjs`
 helpers still exist for the terminal.)
 
 **Develop the UI without the bot.** `npm run web` serves the API + built UI
@@ -411,10 +415,11 @@ terminal and `npm run web:dev` (Vite on :5173, proxies `/api` to :3000) in
 another.
 
 **Security:** the UI binds to 127.0.0.1 only and requires a login (default
-`admin` / `admin`, change it on first sign-in). Sessions are httpOnly cookies
-(`Secure` over https), login attempts are rate-limited, passwords are
-scrypt-hashed in SQLite, and destructive/system operations require an admin
-account. Still, add TLS via a reverse proxy before
+`admin` / `admin`; you must set a new password before the dashboard unlocks).
+Sessions are httpOnly cookies (`Secure` over https) that are revoked on password
+change, requests are same-origin-checked (CSRF), login attempts are rate-limited,
+passwords are scrypt-hashed (8-char minimum) in SQLite, and destructive/system
+operations require an admin account. Still, add TLS via a reverse proxy before
 exposing it beyond localhost. It never returns API keys or the Discord token to
 the browser — those stay in `.env` and only their "is it set?" status is shown.
 
