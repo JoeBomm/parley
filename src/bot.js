@@ -225,10 +225,9 @@ export function startBot({ db, audioRoot }) {
         .then(() => console.log(`Registered commands in guild ${guildId}`))
         .catch((e) => console.error(`deploy to guild ${guildId} failed:`, e.message));
     }
-    for (const m of db.findOrphanedMeetings()) {
-      db.setMeetingStatus(m.id, 'transcription_failed');
-      console.warn(`Orphaned meeting ${m.id} marked transcription_failed on boot.`);
-    }
+    // Orphaned-meeting + audio-dir reconciliation now runs at process boot
+    // (src/index.js → reconcileOnBoot) so it happens in web-only mode too, not
+    // just when the bot logs in.
   });
 
   // Register commands when the bot joins a new guild, so they're available

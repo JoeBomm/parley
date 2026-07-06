@@ -5,12 +5,18 @@
 import { join } from 'node:path';
 import { config, hasDiscordCreds } from './config/env.js';
 import { openDb } from './store/db.js';
+import { reconcileOnBoot } from './store/reconcile.js';
 import { BotController } from './bot-controller.js';
 import { SidecarController } from './sidecar-controller.js';
 import { startWebServer } from './web/server.js';
 
 const db = openDb(join(config.dataDir, 'meetings.db'));
 const audioRoot = join(config.dataDir, 'audio');
+
+// Boot housekeeping BEFORE anything starts, so a crash mid-pipeline is recovered
+// even in web-only mode (no Discord creds): orphaned meetings become retryable
+// and stale audio dirs are swept. Best-effort — never block startup on it.
+await reconcileOnBoot(db, audioRoot).catch((e) => console.warn('[reconcile] skipped:', e.message));
 
 const bot = new BotController({ db, audioRoot });
 // Local STT sidecar lifecycle (start/stop from the dashboard). No-op/unmanaged
