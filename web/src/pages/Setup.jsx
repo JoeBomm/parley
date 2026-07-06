@@ -166,12 +166,13 @@ function SidecarControl({ sys, onChanged }) {
   return (
     <div className="rounded-md border border-border px-3.5 py-3">
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-[13px] font-medium text-ink">Local sidecar</span>
           <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full" style={{ color: s.color, background: s.bg }}>
             <span style={{ width: 6, height: 6, borderRadius: 6, background: s.color }} />
             {s.label}{sc.external ? ' · external' : ''}
           </span>
+          {running && sc.device && <DeviceBadge device={sc.device} model={sc.model} batchSize={sc.batchSize} />}
         </div>
         <div className="flex items-center gap-2">
           {running
@@ -185,8 +186,32 @@ function SidecarControl({ sys, onChanged }) {
           ? 'Transcribing locally on this machine. Turn it off to free CPU/RAM when using a cloud API.'
           : 'Off. Start it to transcribe locally without a cloud API.'}
       </p>
+      {running && sc.device === 'cpu' && (
+        <p className="text-xs mt-2 rounded-sm px-2.5 py-2" style={{ color: 'var(--warn)', background: 'var(--warn-soft)' }}>
+          ⚠ Running on <b>CPU</b> — transcription is roughly 7x slower than GPU and is the usual cause of
+          lag on longer meetings. If this machine has an NVIDIA GPU, install the CUDA libraries so the
+          sidecar can use it (see the README GPU section).
+        </p>
+      )}
       {(err || sc.error) && <p className="text-xs text-error mt-1.5">{err || sc.error}</p>}
     </div>
+  );
+}
+
+// Small pill showing the STT compute backend + model + batch size, so users can
+// see at a glance whether transcription is GPU-accelerated (fast) or on the CPU
+// fallback (slow). Green for cuda, muted/amber for cpu.
+function DeviceBadge({ device, model, batchSize }) {
+  const gpu = device === 'cuda';
+  const color = gpu ? 'var(--accent)' : 'var(--warn)';
+  const bg = gpu ? 'var(--accent-soft)' : 'var(--warn-soft)';
+  const label = gpu ? 'GPU' : device === 'cpu' ? 'CPU' : device;
+  const detail = [model, batchSize ? `batch ${batchSize}` : null].filter(Boolean).join(' · ');
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full"
+      style={{ color, background: bg }} title={`STT on ${device}${detail ? ` (${detail})` : ''}`}>
+      {label}{detail ? <span className="opacity-70">· {detail}</span> : null}
+    </span>
   );
 }
 

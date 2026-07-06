@@ -36,6 +36,7 @@ export class SidecarController {
     this.state = 'stopped';  // 'stopped' | 'starting' | 'running' | 'error'
     this.error = null;
     this.logTail = [];       // last few stdout/stderr lines for the UI
+    this.health = null;      // last /health body: { device, compute, model, batch_size }
   }
 
   // Local + venv present => we can manage the process here.
@@ -53,6 +54,12 @@ export class SidecarController {
   async healthy(timeoutMs = 1500) {
     try {
       const res = await this.fetchImpl(`${this.sttUrl.replace(/\/+$/, '')}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+      // Capture the health body (device/compute/model/batch_size) so the UI can
+      // show whether STT is on GPU or the slow CPU fallback. Best-effort: older
+      // sidecars or the test fake may not return JSON.
+      if (res.ok) {
+        try { this.health = typeof res.json === 'function' ? await res.json() : null; } catch { /* keep last */ }
+      }
       return res.ok;
     } catch { return false; }
   }
@@ -137,6 +144,7 @@ export class SidecarController {
   }
 
   status() {
+    const h = this.health || {};
     return {
       state: this.state,
       error: this.error,
@@ -145,6 +153,12 @@ export class SidecarController {
       external: this.external,
       url: this.sttUrl,
       log: this.logTail.slice(-5),
+      // From the sidecar's /health, so the UI can flag slow CPU fallback / show
+      // the active model + batch size. null until the first successful health check.
+      device: h.device ?? null,
+      compute: h.compute ?? null,
+      model: h.model ?? null,
+      batchSize: h.batch_size ?? null,
     };
   }
 }

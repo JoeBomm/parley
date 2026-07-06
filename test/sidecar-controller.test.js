@@ -112,7 +112,28 @@ test('status() snapshot exposes the fields the UI reads', async () => {
   const { sc } = make({ healthSeq: [true] });
   await sc.start();
   const st = sc.status();
-  assert.deepEqual(Object.keys(st).sort(), ['error', 'external', 'log', 'managed', 'running', 'state', 'url'].sort());
+  assert.deepEqual(Object.keys(st).sort(),
+    ['batchSize', 'compute', 'device', 'error', 'external', 'log', 'managed', 'model', 'running', 'state', 'url'].sort());
   assert.equal(st.running, true);
   assert.equal(st.managed, true);
+});
+
+test('status() surfaces device/compute/batch from the /health body', async () => {
+  const fetch = async () => ({ ok: true, json: async () => ({ status: 'ok', model: 'small', device: 'cuda', compute: 'float16', batch_size: 8 }) });
+  const sc = new SidecarController({ sttUrl: 'http://127.0.0.1:8000', deps: { fetch, exists: () => true } });
+  await sc.start();
+  const st = sc.status();
+  assert.equal(st.device, 'cuda');
+  assert.equal(st.compute, 'float16');
+  assert.equal(st.model, 'small');
+  assert.equal(st.batchSize, 8);
+});
+
+test('status() leaves health fields null when /health returns no JSON', async () => {
+  // Older sidecar / non-JSON health: fields stay null, no crash.
+  const { sc } = make({ healthSeq: [true] });
+  await sc.start();
+  const st = sc.status();
+  assert.equal(st.device, null);
+  assert.equal(st.batchSize, null);
 });
