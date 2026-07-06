@@ -24,6 +24,8 @@ export const Icon = {
   Chevron: (p) => <I {...p}><path d="m9 6 6 6-6 6" /></I>,
   Dots: (p) => <I {...p}><circle cx="5" cy="12" r="1.4" /><circle cx="12" cy="12" r="1.4" /><circle cx="19" cy="12" r="1.4" /></I>,
   Trash: (p) => <I {...p}><path d="M4 7h16M9 7V4.5h6V7M6 7l1 13h10l1-13" /></I>,
+  Download: (p) => <I {...p}><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2.5A1.5 1.5 0 0 0 5.5 21h13a1.5 1.5 0 0 0 1.5-1.5V17" /></I>,
+  Menu: (p) => <I {...p}><path d="M4 6h16M4 12h16M4 18h16" /></I>,
   Merge: (p) => <I {...p}><path d="M7 21V9m0 0 3.5 3.5M7 9 3.5 12.5M17 3v6a6 6 0 0 0 6 6" /><circle cx="7" cy="5" r="2" /></I>,
   Hash: (p) => <I {...p}><path d="M5 9h14M5 15h14M9 4 7 20M17 4l-2 16" /></I>,
   Doc: (p) => <I {...p}><path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8z" /><path d="M14 3v5h5M8.5 13h7M8.5 17h7" /></I>,

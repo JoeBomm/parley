@@ -45,7 +45,9 @@ export function LiveProvider({ children }) {
   useEffect(() => {
     function start() {
       clearInterval(timer.current);
-      if (!document.hidden) timer.current = setInterval(refresh, pollMs);
+      // Skip polling entirely when there's no guild selected (nothing to poll)
+      // or the tab is hidden. Refreshes immediately when either changes.
+      if (!document.hidden && guildId) timer.current = setInterval(refresh, pollMs);
     }
     function onVisibilityChange() {
       if (!document.hidden) refresh();
@@ -57,7 +59,7 @@ export function LiveProvider({ children }) {
       clearInterval(timer.current);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [refresh, pollMs]);
+  }, [refresh, pollMs, guildId]);
 
   const stop = useCallback(async (channelId) => {
     await api.stopLive(guildId, channelId);

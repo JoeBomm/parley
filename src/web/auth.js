@@ -203,8 +203,14 @@ export function authRouter({ users, now = () => Date.now(), loginLimiter = creat
   // Current user (or null). Drives the frontend's auth gate; never 401s.
   // `authEnabled: true` tells the client this server enforces login (older
   // servers without this route make the client fall back to open mode).
+  // `defaultPasswordActive` lets the login screen show the admin/admin hint only
+  // while it's actually true, instead of advertising it to every visitor.
   r.get('/auth/me', (req, res) => {
-    res.json({ authEnabled: true, user: req.user || null });
+    res.json({
+      authEnabled: true,
+      user: req.user || null,
+      defaultPasswordActive: users.defaultPasswordActive ? users.defaultPasswordActive() : undefined,
+    });
   });
 
   // Change your own password. Requires the current password unless the account

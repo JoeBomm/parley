@@ -3,7 +3,7 @@ import { useAuth } from '../AuthContext.jsx';
 import { Logo } from '../components/ui.jsx';
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, defaultPasswordActive } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -35,14 +35,16 @@ export default function Login() {
 
           <form onSubmit={submit} className="space-y-4">
             <div>
-              <label className="block text-[13px] font-medium text-ink mb-1.5">Username</label>
+              <label htmlFor="login-username" className="block text-[13px] font-medium text-ink mb-1.5">Username</label>
               <input
+                id="login-username"
                 className="input" value={username} autoFocus autoComplete="username"
                 onChange={(e) => setUsername(e.target.value)} placeholder="admin" />
             </div>
             <div>
-              <label className="block text-[13px] font-medium text-ink mb-1.5">Password</label>
+              <label htmlFor="login-password" className="block text-[13px] font-medium text-ink mb-1.5">Password</label>
               <input
+                id="login-password"
                 className="input" type="password" value={password} autoComplete="current-password"
                 onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
             </div>
@@ -54,10 +56,12 @@ export default function Login() {
           </form>
         </div>
 
-        <p className="text-[11px] text-faint text-center leading-relaxed mt-5">
-          First time? The default account is <code className="text-muted">admin</code> / <code className="text-muted">admin</code>.
-          Change it from Settings after you sign in.
-        </p>
+        {defaultPasswordActive && (
+          <p className="text-[11px] text-faint text-center leading-relaxed mt-5">
+            First time? The default account is <code className="text-muted">admin</code> / <code className="text-muted">admin</code>.
+            You'll be asked to change it right after you sign in.
+          </p>
+        )}
       </div>
     </div>
   );

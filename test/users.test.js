@@ -90,3 +90,12 @@ test('createUser stores email and is queryable via listUsers', () => {
   // Public shape never leaks the hash.
   assert.equal('password_hash' in kim, false);
 });
+
+test('defaultPasswordActive is true for the seeded admin, false after change', () => {
+  const db = openDb(':memory:');
+  const users = installUsers(db);
+  assert.equal(users.defaultPasswordActive(), true); // seeded admin/admin
+  const admin = users.getUserByUsername('admin');
+  users.setPassword(admin.id, 'a-real-password');
+  assert.equal(users.defaultPasswordActive(), false);
+});

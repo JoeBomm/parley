@@ -350,3 +350,17 @@ test('requireAdmin denies an unauthenticated request when the auth stack ran', a
     assert.ok(res.status === 401 || res.status === 403, `expected 401/403, got ${res.status}`);
   } finally { close(); }
 });
+
+test('/auth/me reports defaultPasswordActive while the seeded admin is unchanged', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWith(db).app);
+  try {
+    const me1 = await (await fetch(`${base}/api/auth/me`)).json();
+    assert.equal(me1.defaultPasswordActive, true);
+    // Change the admin password, then it should report false.
+    const cookie = cookieOf(await jpost(base, '/api/auth/login', { username: 'admin', password: 'admin' }));
+    await jpost(base, '/api/auth/password', { newPassword: 'a-real-password' }, cookie);
+    const me2 = await (await fetch(`${base}/api/auth/me`)).json();
+    assert.equal(me2.defaultPasswordActive, false);
+  } finally { close(); }
+});

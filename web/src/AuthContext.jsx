@@ -16,15 +16,17 @@ export const useAuth = () => useContext(Ctx);
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [authEnabled, setAuthEnabled] = useState(true);
+  const [defaultPasswordActive, setDefaultPasswordActive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const { user, authEnabled: enabled } = await api.me();
+      const { user, authEnabled: enabled, defaultPasswordActive: dpa } = await api.me();
       // `authEnabled` is sent by auth-aware servers; default true when present.
       setAuthEnabled(enabled !== false);
+      setDefaultPasswordActive(!!dpa);
       setUser(user || null);
       return user || null;
     } catch (e) {
@@ -72,7 +74,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   return (
-    <Ctx.Provider value={{ user, authEnabled, loading, error, refresh, login, logout, setUser }}>
+    <Ctx.Provider value={{ user, authEnabled, defaultPasswordActive, loading, error, refresh, login, logout, setUser }}>
       {children}
     </Ctx.Provider>
   );

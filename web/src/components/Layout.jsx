@@ -4,6 +4,7 @@ import { useGuild } from '../GuildContext.jsx';
 import { useTheme } from '../ThemeContext.jsx';
 import { useAuth } from '../AuthContext.jsx';
 import { useLive } from '../LiveContext.jsx';
+import { useDismissable } from '../hooks/useDismissable.js';
 import { Icon, Logo, Avatar } from './ui.jsx';
 import { RecDot } from './Live.jsx';
 
@@ -55,29 +56,29 @@ function LiveIndicator() {
 function UserMenu() {
   const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
+  const ref = useDismissable(open, () => setOpen(false));
   if (!user) return null;
   return (
-    <div className="relative">
+    <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((o) => !o)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
         className="flex items-center gap-2 rounded-full pl-1 pr-2 py-1 hover:bg-surface-2 transition-colors"
-        aria-label="Account menu"
+        aria-label="Account menu" aria-haspopup="menu" aria-expanded={open}
       >
         <Avatar name={user.username} size={28} />
         <span className="text-sm font-medium text-ink hidden sm:block max-w-[120px] truncate">{user.username}</span>
         <Icon.Chevron width={13} height={13} className="rotate-90 text-muted" />
       </button>
       {open && (
-        <div className="absolute right-0 mt-1.5 w-52 card shadow-lg p-1.5 z-20 animate-fade-in">
+        <div role="menu" className="absolute right-0 mt-1.5 w-52 card shadow-lg p-1.5 z-20 animate-fade-in">
           <div className="px-2.5 py-2 border-b border-border mb-1">
             <p className="text-sm font-semibold text-ink truncate">{user.username}</p>
             <p className="text-xs text-muted truncate">{user.email || (user.isAdmin ? 'Administrator' : 'Member')}</p>
           </div>
-          <Link to="/account" className="nav-link !py-2" onMouseDown={(e) => e.preventDefault()} onClick={() => setOpen(false)}>
+          <Link to="/account" role="menuitem" className="nav-link !py-2" onClick={() => setOpen(false)}>
             <Icon.Settings width={16} height={16} />Account & users
           </Link>
-          <button onMouseDown={(e) => e.preventDefault()} onClick={logout} className="nav-link !py-2 w-full !text-error">
+          <button role="menuitem" onClick={logout} className="nav-link !py-2 w-full !text-error">
             <Icon.LogOut width={16} height={16} />Sign out
           </button>
         </div>
@@ -106,6 +107,8 @@ export default function Layout() {
   const { theme, toggle } = useTheme();
   const navigate = useNavigate();
   const [q, setQ] = useState('');
+  const [navOpen, setNavOpen] = useState(false); // mobile drawer
+  const drawerRef = useDismissable(navOpen, () => setNavOpen(false));
 
   function onSearch(e) {
     e.preventDefault();
@@ -115,22 +118,27 @@ export default function Layout() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-bg">
-      {/* ── Sidebar ─────────────────────────────────────────────── */}
+      {/* Mobile backdrop */}
+      {navOpen && <div className="fixed inset-0 bg-black/40 z-30 md:hidden" aria-hidden="true" />}
+      {/* ── Sidebar (static ≥md, slide-in drawer <md) ───────────────── */}
       <aside
-        className="shrink-0 flex flex-col bg-bg-2 border-r border-border"
+        ref={drawerRef}
+        className={`shrink-0 flex flex-col bg-bg-2 border-r border-border z-40
+          max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:transition-transform
+          ${navOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full'}`}
         style={{ width: 'var(--sidebar-w)' }}
       >
-        <Link to="/" className="flex items-center gap-2.5 px-5 h-[60px] shrink-0 no-underline">
+        <Link to="/" onClick={() => setNavOpen(false)} className="flex items-center gap-2.5 px-5 h-[60px] shrink-0 no-underline">
           <Logo size={30} className="shrink-0" />
           <span className="font-display text-[19px] font-extrabold text-ink tracking-tight">Parley</span>
         </Link>
 
-        <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto">
+        <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto" onClick={() => setNavOpen(false)}>
           <p className="px-2 pt-2 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Workspace</p>
           {NAV.map((item) => <NavItem key={item.to} {...item} />)}
         </nav>
 
-        <div className="px-3 py-3 border-t border-border">
+        <div className="px-3 py-3 border-t border-border" onClick={() => setNavOpen(false)}>
           <NavLink to="/setup" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
             <Icon.Settings width={18} height={18} className="shrink-0" />
             <span>Settings</span>
@@ -140,7 +148,12 @@ export default function Layout() {
 
       {/* ── Main column ─────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="shrink-0 h-[60px] border-b border-border bg-bg/80 backdrop-blur flex items-center gap-3 px-6">
+        <header className="shrink-0 h-[60px] border-b border-border bg-bg/80 backdrop-blur flex items-center gap-3 px-4 sm:px-6">
+          {/* Hamburger — only below md, where the sidebar is a drawer. */}
+          <button onClick={() => setNavOpen(true)} aria-label="Open navigation"
+            className="md:hidden h-9 w-9 grid place-items-center rounded-sm border border-border text-muted hover:text-ink hover:bg-surface-2 transition-colors">
+            <Icon.Menu width={18} height={18} />
+          </button>
           <GuildSwitcher />
 
           <form onSubmit={onSearch} className="relative ml-2 hidden sm:block">

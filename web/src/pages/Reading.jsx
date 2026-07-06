@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useGuild } from '../GuildContext.jsx';
 import { Avatar, AvatarStack, Icon, Empty, TalkBar } from '../components/ui.jsx';
 import { fmtDateLong, fmtTime, fmtDuration, fmtClock, fmtMs, colorOf } from '../lib/format.js';
+import { useDismissable } from '../hooks/useDismissable.js';
+import Markdown from '../components/Markdown.jsx';
 
 /* ── retry banner (failed / stuck meetings) ───────────────────────────── */
 const STATUS_COPY = {
@@ -178,49 +180,57 @@ function AskBox({ guildId, meetingId }) {
       )}
       {error && <p className="mt-3 text-sm text-error" role="alert">{error}</p>}
       {answer && (
-        <div className="mt-4 text-[14.5px] text-ink leading-relaxed bg-surface-2 rounded-sm p-4 border border-border whitespace-pre-wrap animate-fade-in">
-          {answer}
+        <div className="mt-4 text-[14.5px] text-ink leading-relaxed bg-surface-2 rounded-sm p-4 border border-border animate-fade-in">
+          <Markdown text={answer} />
         </div>
       )}
     </section>
   );
 }
 
-/* ── meeting actions (delete / merge) ─────────────────────────────────── */
+/* ── meeting actions (delete / merge / export) ─────────────────────────── */
 function MeetingActions({ meeting, meetings }) {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState(false); // false | 'pick' | 'busy'
   const [sources, setSources] = useState(() => new Set());
   const [err, setErr] = useState(null);
   const others = (meetings || []).filter((m) => m.id !== meeting.id);
+  // Close the menu/merge popover on outside click or Escape (a11y).
+  const ref = useDismissable(open || !!mode, () => { setOpen(false); if (mode !== 'busy') setMode(false); });
 
   async function del() {
     setOpen(false);
     if (!window.confirm('Delete this meeting, its transcript, summary and action items? This cannot be undone.')) return;
-    try { await api.deleteMeeting(meeting.id); window.location.assign('/meetings'); }
+    try { await api.deleteMeeting(meeting.id); navigate('/meetings'); }
     catch (e) { setErr(e?.message || 'Delete failed'); }
   }
   function toggle(id) { setSources((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
   async function merge() {
     if (sources.size === 0) return;
     setMode('busy'); setErr(null);
-    try { await api.mergeMeetings(meeting.id, [...sources]); window.location.assign(`/meetings/${meeting.id}`); }
+    try { await api.mergeMeetings(meeting.id, [...sources]); setMode(false); setSources(new Set()); navigate(0); }
     catch (e) { setErr(e?.message || 'Merge failed'); setMode('pick'); }
   }
 
   return (
-    <div className="relative shrink-0">
+    <div className="relative shrink-0" ref={ref}>
       <button onClick={() => { setOpen((v) => !v); setMode(false); }} aria-label="Meeting actions"
+        aria-haspopup="menu" aria-expanded={open || !!mode}
         className="h-9 w-9 grid place-items-center rounded-sm border border-border text-muted hover:text-ink hover:bg-surface-2 transition-colors">
         <Icon.Dots width={18} height={18} />
       </button>
       {open && !mode && (
-        <div className="absolute right-0 mt-1.5 w-52 card shadow-lg py-1 z-20">
-          <button onClick={() => { setMode('pick'); setOpen(false); }} disabled={others.length === 0}
+        <div role="menu" className="absolute right-0 mt-1.5 w-52 card shadow-lg py-1 z-20">
+          <a href={api.exportMeetingUrl(meeting.id, 'md')} role="menuitem" onClick={() => setOpen(false)}
+            className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-ink hover:bg-surface-2 no-underline">
+            <Icon.Download width={15} height={15} /> Export (markdown)
+          </a>
+          <button role="menuitem" onClick={() => { setMode('pick'); setOpen(false); }} disabled={others.length === 0}
             className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-ink hover:bg-surface-2 disabled:opacity-40">
             <Icon.Merge width={15} height={15} /> Merge another meeting
           </button>
-          <button onClick={del} className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-error hover:bg-error-soft">
+          <button role="menuitem" onClick={del} className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-sm text-error hover:bg-error-soft">
             <Icon.Trash width={15} height={15} /> Delete meeting
           </button>
         </div>

@@ -121,6 +121,13 @@ export function installUsers(db, { now = () => new Date().toISOString() } = {}) 
     countAdmins() {
       return sql.prepare(`SELECT COUNT(*) AS c FROM users WHERE is_admin = 1`).get().c;
     },
+    // True while any admin still carries the seeded default password (the UI uses
+    // this to show the login-screen hint only when it's actually relevant).
+    defaultPasswordActive() {
+      return sql.prepare(
+        `SELECT COUNT(*) AS c FROM users WHERE is_admin = 1 AND must_change_password = 1`
+      ).get().c > 0;
+    },
 
     // ── Auth ────────────────────────────────────────────────────────────────
     // Verify credentials; returns the public user on success, else null.
