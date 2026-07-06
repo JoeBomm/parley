@@ -39,7 +39,9 @@ function appWithSidecar(db, sidecar) {
 function appWithUser(db, user) {
   const app = express();
   app.use(express.json());
-  app.use('/api', (req, _res, next) => { req.user = user; next(); });
+  // Mirror attachUser: set req.authResolved so requireAdmin fails closed for
+  // non-admins (the real server always runs attachUser in front of the router).
+  app.use('/api', (req, _res, next) => { req.authResolved = true; req.user = user; next(); });
   app.use('/api', apiRouter({ db, client: null }));
   return app;
 }
@@ -349,3 +351,47 @@ test('D3: no-auth standalone server (no req.user attached) still passes admin ro
   } finally { close(); }
 });
 
+
+// ── Meeting export (#17) ──────────────────────────────────────────────────────
+
+test('GET /api/meetings/:id/export returns full JSON with all utterances', async () => {
+  const db = openDb(':memory:');
+  const id = db.createMeeting({ guildId: 'g1', channelId: 'c', channelName: 'planning', startedAt: '2026-01-02T10:00:00Z' });
+  db.addAttendee(id, 'u1', 'Alice');
+  for (let i = 0; i < 40; i++) db.addUtterance({ meetingId: id, userId: 'u1', displayName: 'Alice', startMs: i * 1000, endMs: i * 1000 + 500, text: `line ${i}` });
+  db.saveSummary(id, { tldr: 'did stuff', actionItems: [] }, [], 'fake:m');
+  const { base, close } = await listen(appWith(db));
+  try {
+    const r = await fetch(`${base}/api/meetings/${id}/export`);
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('content-disposition') || '', /meeting-\d+-2026-01-02\.json/);
+    const body = await r.json();
+    assert.equal(body.utterances.length, 40); // not truncated like /raw
+    assert.equal(body.attendees[0], 'Alice');
+    assert.equal(body.summary.notes.tldr, 'did stuff');
+  } finally { close(); }
+});
+
+test('GET /api/meetings/:id/export?format=md returns a markdown download', async () => {
+  const db = openDb(':memory:');
+  const id = db.createMeeting({ guildId: 'g1', channelId: 'c', channelName: 'planning', startedAt: '2026-01-02T10:00:00Z' });
+  db.addUtterance({ meetingId: id, userId: 'u1', displayName: 'Alice', startMs: 65000, endMs: 66000, text: 'hello world' });
+  db.saveSummary(id, { tldr: 'summary here', actionItems: [] }, [], 'fake:m');
+  const { base, close } = await listen(appWith(db));
+  try {
+    const r = await fetch(`${base}/api/meetings/${id}/export?format=md`);
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('content-type') || '', /text\/markdown/);
+    const md = await r.text();
+    assert.match(md, /# planning/);
+    assert.match(md, /\[01:05\] Alice:\*\* hello world/); // timestamped transcript line
+  } finally { close(); }
+});
+
+test('GET /api/meetings/:id/export 404s for a missing meeting', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWith(db));
+  try {
+    assert.equal((await fetch(`${base}/api/meetings/9999/export`)).status, 404);
+  } finally { close(); }
+});

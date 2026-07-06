@@ -127,6 +127,40 @@ export function apiRouter({ db, bot = null, client = null, sidecar = null }) {
     });
   });
 
+  // Full export of a meeting for archiving/backup — the whole transcript (not the
+  // 20-line preview /raw shows) plus notes. `?format=md` returns a self-contained
+  // markdown document as a file download; the default returns JSON. Complements
+  // the lack of any retention/backup story.
+  r.get('/meetings/:id/export', async (req, res) => {
+    const id = Number(req.params.id);
+    const meeting = db.getMeeting(id);
+    if (!meeting) return res.status(404).json({ error: 'meeting not found' });
+    const summary = db.getSummary(id);
+    const attendees = db.listAttendees(id).map((a) => a.display_name);
+    const utterances = db.listUtterances(id);
+    const date = (meeting.started_at || '').slice(0, 10);
+    if (req.query.format === 'md') {
+      const { renderNotes } = await import('../delivery/discord-notes.js');
+      const lines = [`# ${meeting.channel_name || 'Meeting'} — ${date}`, ''];
+      if (attendees.length) lines.push(`**Attendees:** ${attendees.join(', ')}`, '');
+      if (summary?.notes) lines.push(renderNotes(summary.notes, summary.talktime || [],
+        { channelName: meeting.channel_name, date: meeting.started_at }), '');
+      lines.push('## Full transcript', '');
+      for (const u of utterances) {
+        const t = Math.floor((u.start_ms || 0) / 1000);
+        const mm = String(Math.floor(t / 60)).padStart(2, '0');
+        const ss = String(t % 60).padStart(2, '0');
+        lines.push(`**[${mm}:${ss}] ${u.display_name}:** ${u.text}`);
+      }
+      const md = lines.join('\n');
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="meeting-${id}-${date}.md"`);
+      return res.send(md);
+    }
+    res.setHeader('Content-Disposition', `attachment; filename="meeting-${id}-${date}.json"`);
+    res.json({ meeting, summary, attendees, utterances });
+  });
+
   // Retry a failed/stuck meeting: re-summarize if the transcript survived, else
   // re-transcribe from the saved PCM. Posts to Discord too when a live client
   // is attached. Returns the new status so the UI can refresh.

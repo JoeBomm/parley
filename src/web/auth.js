@@ -106,7 +106,8 @@ export function createLoginLimiter({
 export function attachUser(users) {
   return (req, _res, next) => {
     const token = readCookie(req, COOKIE);
-    req.sessionToken = token;
+    req.sessionToken = token ?? null;
+    req.authResolved = true; // marks that the auth stack ran (see requireAdmin)
     req.user = token ? users.getSessionUser(token) : null;
     next();
   };
@@ -119,14 +120,14 @@ export function requireAuth(_users) {
   };
 }
 
-// Gates a route to admin users only. Deliberately permissive when no user is
-// attached at all (req.user undefined/null) — that's the signature of the
-// standalone/test server, which mounts apiRouter without attachUser/requireAuth
-// in front of it. In that mode nobody is authenticated, so there's no admin
-// concept to enforce. Once a real user is attached (attachUser ran), a
-// non-admin is rejected; an admin passes through.
+// Gates a route to admin users only. When the auth stack ran (attachUser set
+// req.authResolved) a missing or non-admin user is rejected — fail closed. Only
+// when auth was never wired in front (the standalone/test server that mounts
+// apiRouter bare) is it permissive, since there's no auth to enforce there.
 export function requireAdmin(req, res, next) {
-  if (req.user && !req.user.isAdmin) return res.status(403).json({ error: 'Admin access required.' });
+  if (req.authResolved && (!req.user || !req.user.isAdmin)) {
+    return res.status(403).json({ error: 'Admin access required.' });
+  }
   next();
 }
 

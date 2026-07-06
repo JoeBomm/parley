@@ -21,7 +21,15 @@ export class MeetingManager {
     for (const a of attendees || []) this.db.addAttendee(meetingId, a.id, a.displayName);
 
     const audioDir = `${this.audioRoot}/${meetingId}`;
-    const { registry, stopAll } = this.startCapture({ meetingId, connection, guild, audioDir });
+    let registry, stopAll;
+    try {
+      ({ registry, stopAll } = this.startCapture({ meetingId, connection, guild, audioDir }));
+    } catch (err) {
+      // Capture wiring failed (e.g. mkdir/permission error): don't leave a
+      // phantom 'recording' row that the orphan sweep later has to clean up.
+      this.db.setMeetingStatus(meetingId, 'transcription_failed');
+      throw err;
+    }
     this.active.set(k, { meetingId, guildId, channelId, channelName, startedAt, connection, guild, registry, stopAll, audioDir });
     return meetingId;
   }

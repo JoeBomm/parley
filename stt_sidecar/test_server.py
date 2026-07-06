@@ -110,3 +110,37 @@ def test_transcribe_rebuilds_model_on_name_change(monkeypatch):
                     data={"model": "small"})
     assert r.status_code == 200
     assert built["name"] == "small"  # rebuilt with the requested model, not stale "large"
+
+
+def test_health_reports_batch_size(monkeypatch):
+    reset_state()
+    monkeypatch.setattr("server.WhisperModel", lambda name, device, compute_type: FakeModel())
+    import server
+    server.get_model("small")  # device becomes 'cuda' (fake ctor never raises)
+    body = TestClient(app).get("/health").json()
+    assert "batch_size" in body
+    assert body["batch_size"] == 8  # cuda default
+
+
+def test_batch_size_disabled_uses_sequential(monkeypatch):
+    # STT_BATCH_SIZE=0 disables batching; a FakeModel (no feature_extractor)
+    # would also force the sequential path. Either way transcribe still works.
+    reset_state()
+    monkeypatch.setattr("server.STT_BATCH_SIZE", 0)
+    _state["model"] = FakeModel()
+    _state["model_name"] = "small"
+    import server
+    assert server.get_batched() is None  # disabled
+    r = TestClient(app).post("/transcribe",
+                             files={"file": ("a.wav", make_silent_wav(), "audio/wav")})
+    assert r.json()["text"] == "hello world"
+
+
+def test_fake_model_falls_back_to_sequential(monkeypatch):
+    # A model without feature_extractor (the test fake) must not be wrapped in the
+    # batched pipeline — get_batched returns None so transcribe stays sequential.
+    reset_state()
+    monkeypatch.setattr("server.STT_BATCH_SIZE", None)  # per-device default (>0)
+    _state.update(model=FakeModel(), model_name="small", device="cpu", compute="int8")
+    import server
+    assert server.get_batched() is None

@@ -38,6 +38,8 @@ export const api = {
   stopLive: (g, channelId) => fetch(`/api/guilds/${g}/live/${channelId}/stop`, { method: 'POST' }).then(json),
   stats: (g) => fetch(`/api/guilds/${g}/stats`).then(json),
   meeting: (id) => fetch(`/api/meetings/${id}`).then(json),
+  // Export URL for a download link/button (md or json). Not fetched via json().
+  exportMeetingUrl: (id, format = 'md') => `/api/meetings/${id}/export?format=${format}`,
   todos: (g, { open, assignee } = {}) => {
     const p = new URLSearchParams();
     if (open) p.set('open', '1');

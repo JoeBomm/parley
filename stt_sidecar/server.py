@@ -9,6 +9,12 @@ log = logging.getLogger("stt_sidecar")
 # back to cpu/int8 on any init failure. Explicit values are used as-is.
 STT_DEVICE = os.environ.get("STT_DEVICE", "auto")
 STT_COMPUTE = os.environ.get("STT_COMPUTE", "auto")
+# Batched inference (faster-whisper 1.1+) transcribes a clip's VAD segments in
+# parallel instead of one 30s window at a time — 1.7-2.6x faster on both GPU and
+# CPU with near-identical accuracy (see docs/stt-research-2026-07-06.md). Batch
+# size defaults per device; STT_BATCH_SIZE overrides, STT_BATCH_SIZE=0 disables.
+_env_batch = os.environ.get("STT_BATCH_SIZE")
+STT_BATCH_SIZE = int(_env_batch) if (_env_batch not in (None, "")) else None
 
 
 def _preload_cuda_libs():
@@ -34,10 +40,18 @@ def _preload_cuda_libs():
 if STT_DEVICE in ("auto", "cuda"):
     _preload_cuda_libs()
 
-from faster_whisper import WhisperModel  # noqa: E402 (must follow lib preload above)
+from faster_whisper import WhisperModel, BatchedInferencePipeline  # noqa: E402 (must follow lib preload above)
 
 app = FastAPI()
-_state = {"model": None, "model_name": None, "device": None, "compute": None}
+_state = {"model": None, "model_name": None, "device": None, "compute": None, "batched": None}
+
+
+def _resolve_batch_size():
+    """Effective batch size: explicit env wins; else per-device default (GPU can
+    hold a bigger batch than CPU). Returns 0 to mean 'disabled' (sequential)."""
+    if STT_BATCH_SIZE is not None:
+        return max(0, STT_BATCH_SIZE)
+    return 8 if _state["device"] == "cuda" else 4
 
 def _candidates():
     """Ordered (device, compute_type) pairs to try when building a model."""
@@ -72,11 +86,32 @@ def get_model(name: str):
             last_err = err
             log.warning("STT device %s/%s unavailable (%s); falling back", device, compute, err)
             continue
-        _state.update(model=model, model_name=name, device=device, compute=compute)
+        _state.update(model=model, model_name=name, device=device, compute=compute, batched=None)
         if device != "cpu":
             log.info("STT model %s running on %s/%s", name, device, compute)
         return model
     raise last_err
+
+
+def get_batched():
+    """Lazily wrap the warm model in a BatchedInferencePipeline, cached until the
+    model rebuilds. Returns None if batching is disabled or the model can't be
+    wrapped (e.g. a fake test model), so the caller falls back to sequential."""
+    if _resolve_batch_size() <= 0:
+        return None
+    if _state["batched"] is not None:
+        return _state["batched"]
+    # A real faster-whisper model exposes feature_extractor; the batched pipeline
+    # needs it. Guard so fakes/unsupported models fall back cleanly instead of
+    # raising deep inside transcribe().
+    if not hasattr(_state["model"], "feature_extractor"):
+        return None
+    try:
+        _state["batched"] = BatchedInferencePipeline(model=_state["model"])
+    except Exception as err:  # unsupported — fall back
+        log.warning("Batched pipeline unavailable (%s); using sequential", err)
+        _state["batched"] = None
+    return _state["batched"]
 
 @app.get("/health")
 def health():
@@ -85,6 +120,7 @@ def health():
         "model": _state["model_name"],
         "device": _state["device"],
         "compute": _state["compute"],
+        "batch_size": _resolve_batch_size(),
     }
 
 # Plain `def` (audit B1): FastAPI runs sync endpoints in its threadpool, so the
@@ -98,7 +134,14 @@ def transcribe(file: UploadFile = File(...), model: str = Form("small"), languag
         path = tmp.name
     try:
         lang = None if language == "auto" else language
-        segments, info = m.transcribe(path, language=lang, word_timestamps=True)
+        # Prefer the batched pipeline (parallel VAD segments, 1.7-2.6x faster);
+        # fall back to the plain model when batching is off/unavailable.
+        batched = get_batched()
+        if batched is not None:
+            segments, info = batched.transcribe(
+                path, language=lang, word_timestamps=True, batch_size=_resolve_batch_size())
+        else:
+            segments, info = m.transcribe(path, language=lang, word_timestamps=True)
         words, texts = [], []
         for seg in segments:
             texts.append(seg.text)

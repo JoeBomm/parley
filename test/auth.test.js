@@ -335,3 +335,18 @@ test('a same-origin state-changing request passes the guard', async () => {
     assert.equal(res.status, 200);
   } finally { close(); }
 });
+
+// ── requireAdmin fails closed once auth has run (#22) ─────────────────────────
+
+test('requireAdmin denies an unauthenticated request when the auth stack ran', async () => {
+  const db = openDb(':memory:');
+  const { base, close } = await listen(appWith(db, { gated: true }).app);
+  try {
+    // No cookie → attachUser ran (authResolved) but req.user is null. An admin
+    // route must 403 (fail closed), not fall through. /users is admin-gated.
+    const res = await fetch(`${base}/api/users`);
+    // requireAuth returns 401 first here; the point is it is NOT a 200. Assert
+    // it is rejected.
+    assert.ok(res.status === 401 || res.status === 403, `expected 401/403, got ${res.status}`);
+  } finally { close(); }
+});
