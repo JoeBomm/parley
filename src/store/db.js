@@ -199,7 +199,7 @@ export function openDb(path) {
           .run(complete ? 1 : 0, meetingId);
         sql.exec('COMMIT');
       } catch (err) {
-        sql.exec('ROLLBACK');
+        try { sql.exec('ROLLBACK'); } catch { /* SQLite may have auto-rolled back */ }
         throw err;
       }
     },

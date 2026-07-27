@@ -54,7 +54,7 @@ test('replaceUtterances rolls back transcript and completion state when an inser
     CREATE TRIGGER fail_replacement BEFORE INSERT ON utterances
     WHEN NEW.text = 'explode'
     BEGIN
-      SELECT RAISE(ABORT, 'forced replacement failure');
+      SELECT RAISE(ROLLBACK, 'forced replacement failure');
     END;
   `);
 
