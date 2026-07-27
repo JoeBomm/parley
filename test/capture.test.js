@@ -83,3 +83,25 @@ test('onSpeaker fires for a member who first speaks (latecomer attendee capture)
     assert.deepEqual(seen, [['u9', 'Latecomer']]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// A throw while starting a track (e.g. the native opus module failing to load
+// after a system libc upgrade) must NOT escape the speaking-start listener and
+// crash the whole process mid-meeting. Regression for the glibc-2.44 opus crash.
+test('a throwing track start is swallowed and does not crash the emitter', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'parley-cap3-'));
+  try {
+    const connection = fakeConnection();
+    // subscribe() throws to simulate opus/decoder construction blowing up.
+    connection.receiver.subscribe = () => { throw new Error('Cannot find module opus.node'); };
+    const guild = fakeGuild({ u1: { displayName: 'Alice', user: { bot: false } } });
+    const { TrackRegistry } = await import('../src/voice/capture.js');
+    const registry = new TrackRegistry();
+    attachCapture({ connection, guild, audioDir: dir, registry });
+
+    // If the throw escaped the listener this would take the process down.
+    assert.doesNotThrow(() => connection.receiver.speaking.emit('start', 'u1'));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(registry.isActive('u1'), false);
+    assert.equal(registry.list().length, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
