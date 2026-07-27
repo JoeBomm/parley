@@ -24,6 +24,54 @@ test('retryPlan: re-summarize when utterances exist', () => {
   assert.equal(plan.action, 'resummarize');
 });
 
+test('retryPlan: re-summarizes a known-complete transcript even when PCM remains', () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const db = openDb(':memory:');
+    const id = db.createMeeting({ guildId: 'g1', channelId: 'c', channelName: 'gen', startedAt: 'now' });
+    db.addUtterance({ meetingId: id, userId: 'u', displayName: 'Al', startMs: 0, endMs: 5, text: 'hi' });
+    db.setTranscriptionComplete(id, true);
+    db.setMeetingStatus(id, 'summary_failed');
+    const audioDir = join(dir, 'audio', String(id));
+    mkdirSync(audioDir, { recursive: true });
+    writeFileSync(join(audioDir, 'u_0.pcm'), 'x');
+
+    assert.equal(retryPlan(db, id, { dataDir: dir }).action, 'resummarize');
+  } finally { cleanup(); }
+});
+
+test('retryPlan: retranscribes an explicitly incomplete transcript when PCM remains', () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const db = openDb(':memory:');
+    const id = db.createMeeting({ guildId: 'g1', channelId: 'c', channelName: 'gen', startedAt: 'now' });
+    db.addUtterance({ meetingId: id, userId: 'u', displayName: 'Al', startMs: 0, endMs: 5, text: 'partial' });
+    db.setTranscriptionComplete(id, false);
+    db.setMeetingStatus(id, 'summary_failed');
+    const audioDir = join(dir, 'audio', String(id));
+    mkdirSync(audioDir, { recursive: true });
+    writeFileSync(join(audioDir, 'u_0.pcm'), 'x');
+
+    assert.equal(retryPlan(db, id, { dataDir: dir }).action, 'retranscribe');
+  } finally { cleanup(); }
+});
+
+test('retryPlan: conservatively retranscribes a legacy unknown transcript when PCM remains', () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const db = openDb(':memory:');
+    const id = db.createMeeting({ guildId: 'g1', channelId: 'c', channelName: 'gen', startedAt: 'now' });
+    db.addUtterance({ meetingId: id, userId: 'u', displayName: 'Al', startMs: 0, endMs: 5, text: 'possibly partial' });
+    db.setMeetingStatus(id, 'summary_failed');
+    const audioDir = join(dir, 'audio', String(id));
+    mkdirSync(audioDir, { recursive: true });
+    writeFileSync(join(audioDir, 'u_0.pcm'), 'x');
+
+    assert.equal(db.getMeeting(id).transcription_complete, null);
+    assert.equal(retryPlan(db, id, { dataDir: dir }).action, 'retranscribe');
+  } finally { cleanup(); }
+});
+
 test('retryPlan: retranscribe when PCM exists but no utterances', () => {
   const { dir, cleanup } = tmp();
   try {

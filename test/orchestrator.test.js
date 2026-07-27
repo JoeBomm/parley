@@ -24,6 +24,7 @@ test('processMeeting transcribes, summarizes, stores, sets done, delivers', asyn
     deliver: async (notes, talktime) => { delivered = { notes, talktime }; },
   });
   assert.equal(db.getMeeting(id).status, 'done');
+  assert.equal(db.getMeeting(id).transcription_complete, 1);
   assert.equal(db.listUtterances(id).length, 1);
   assert.ok(db.getSummary(id));
   assert.ok(delivered.notes.tldr);
@@ -40,6 +41,7 @@ test('processMeeting marks transcription_failed and rethrows on STT error', asyn
     deliver: async () => {},
   }), /sidecar down/);
   assert.equal(db.getMeeting(id).status, 'transcription_failed');
+  assert.equal(db.getMeeting(id).transcription_complete, 0);
 });
 
 test('processMeeting keeps a meeting alive when only some tracks fail transcription', async () => {
@@ -58,6 +60,7 @@ test('processMeeting keeps a meeting alive when only some tracks fail transcript
     deliver: async () => {},
   });
   assert.equal(db.getMeeting(id).status, 'done');
+  assert.equal(db.getMeeting(id).transcription_complete, 0);
   assert.equal(db.listUtterances(id).length, 1);
   assert.ok(notes.tldr);
   assert.equal(talktime[0].displayName, 'Alice');
@@ -73,7 +76,62 @@ test('processMeeting marks transcription_failed when every track fails (no parti
     deliver: async () => {},
   }), /All 1 track\(s\) failed transcription/);
   assert.equal(db.getMeeting(id).status, 'transcription_failed');
+  assert.equal(db.getMeeting(id).transcription_complete, 0);
   assert.equal(db.listUtterances(id).length, 0);
+});
+
+test('processMeeting rolls back transcript replacement and fails safely when persistence throws', async () => {
+  const { db, id } = seed();
+  db.addUtterance({ meetingId: id, userId: 'old', displayName: 'Old', startMs: 0, endMs: 1, text: 'preserve me' });
+  db.setTranscriptionComplete(id, true);
+  db.sql.exec(`
+    CREATE TRIGGER fail_pipeline_replacement BEFORE INSERT ON utterances
+    WHEN NEW.text = 'explode'
+    BEGIN
+      SELECT RAISE(ABORT, 'forced replacement failure');
+    END;
+  `);
+
+  await assert.rejects(processMeeting(db, id, {
+    tracks: [
+      { userId: 'u1', displayName: 'Alice', startMs: 0, pcmPath: '/a.pcm' },
+      { userId: 'u2', displayName: 'Bob', startMs: 1000, pcmPath: '/b.pcm' },
+    ],
+    cfg: { summarizerProvider: 'fake' },
+    summarizer: new FakeSummarizer(),
+    transcribe: async () => ({
+      utterances: [
+        { userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'first' },
+        { userId: 'u2', displayName: 'Bob', startMs: 1000, endMs: 2000, text: 'explode' },
+      ],
+      failures: [],
+    }),
+    deliver: async () => {},
+  }), /forced replacement failure/);
+
+  assert.equal(db.getMeeting(id).status, 'transcription_failed');
+  assert.deepEqual(db.listUtterances(id).map((u) => u.text), ['preserve me']);
+  assert.equal(db.getMeeting(id).transcription_complete, 1);
+});
+
+test('processMeeting replaces an existing partial transcript instead of appending duplicates', async () => {
+  const { db, id } = seed();
+  db.addUtterance({ meetingId: id, userId: 'old', displayName: 'Old', startMs: 0, endMs: 1, text: 'old partial' });
+  db.setTranscriptionComplete(id, false);
+
+  await processMeeting(db, id, {
+    tracks,
+    cfg: { summarizerProvider: 'fake' },
+    summarizer: new FakeSummarizer(),
+    transcribe: async () => ({
+      utterances: [{ userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'replacement' }],
+      failures: [],
+    }),
+    deliver: async () => {},
+  });
+
+  assert.deepEqual(db.listUtterances(id).map((u) => u.text), ['replacement']);
+  assert.equal(db.getMeeting(id).transcription_complete, 1);
 });
 
 test('processMeeting marks summary_failed when summarizer throws', async () => {

@@ -28,10 +28,13 @@ export function retryPlan(db, meetingId, { dataDir, exists = readdirSync } = {})
   const meeting = db.getMeeting(meetingId);
   if (!meeting) return { ok: false, action: 'none', reason: 'Meeting not found.' };
   const hasUtterances = db.listUtterances(meetingId).length > 0;
-  if (hasUtterances) return { ok: true, action: 'resummarize', meeting };
   let pcmCount = 0;
   try { pcmCount = exists(join(dataDir, 'audio', String(meetingId))).filter((f) => f.endsWith('.pcm')).length; }
   catch { pcmCount = 0; }
+  if (pcmCount > 0 && meeting.transcription_complete !== 1) {
+    return { ok: true, action: 'retranscribe', meeting };
+  }
+  if (hasUtterances) return { ok: true, action: 'resummarize', meeting };
   if (pcmCount > 0) return { ok: true, action: 'retranscribe', meeting };
   return { ok: false, action: 'none', meeting,
     reason: 'No transcript and no saved audio remain for this meeting, so it cannot be retried.' };

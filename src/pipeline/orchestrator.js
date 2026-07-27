@@ -26,6 +26,7 @@ export async function processMeeting(db, meetingId, opts) {
       failures = result.failures || [];
     }
   } catch (err) {
+    db.setTranscriptionComplete(meetingId, false);
     db.setMeetingStatus(meetingId, 'transcription_failed');
     err.userMessage = `Transcription failed — the STT sidecar may be down or unreachable. (${err.message})`;
     throw err;
@@ -39,12 +40,19 @@ export async function processMeeting(db, meetingId, opts) {
     console.warn(`[orchestrator] ${failures.length} track(s) failed transcription for meeting ${meetingId}`);
   }
   if (utterances.length === 0 && failures.length > 0) {
+    db.setTranscriptionComplete(meetingId, false);
     db.setMeetingStatus(meetingId, 'transcription_failed');
     const err = new Error(`All ${failures.length} track(s) failed transcription`);
     err.userMessage = `Transcription failed — the STT sidecar may be down or unreachable. (${err.message})`;
     throw err;
   }
-  for (const u of utterances) db.addUtterance({ meetingId, ...u });
+  try {
+    db.replaceUtterances(meetingId, utterances, { complete: failures.length === 0 });
+  } catch (err) {
+    db.setMeetingStatus(meetingId, 'transcription_failed');
+    err.userMessage = `Transcription could not be saved safely. (${err.message})`;
+    throw err;
+  }
 
   // Nobody actually spoke (bot joined an empty/near-silent channel). Don't
   // summarize or deliver — signal the caller to discard the meeting so these
