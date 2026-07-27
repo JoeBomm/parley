@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS meetings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   guild_id TEXT, channel_id TEXT, channel_name TEXT,
   started_at TEXT, ended_at TEXT,
-  status TEXT NOT NULL DEFAULT 'recording'
+  status TEXT NOT NULL DEFAULT 'recording',
+  transcription_complete INTEGER
 );
 CREATE TABLE IF NOT EXISTS attendees (
   meeting_id INTEGER, user_id TEXT, display_name TEXT,
@@ -67,6 +68,13 @@ export function openDb(path) {
   // fix for two concurrent bot instances — run one.
   sql.exec('PRAGMA busy_timeout = 5000');
   sql.exec(SCHEMA);
+
+  // Migration: track whether every submitted audio track transcribed. NULL is
+  // intentionally preserved for legacy meetings whose completeness is unknown.
+  const meetingCols = sql.prepare(`PRAGMA table_info(meetings)`).all();
+  if (!meetingCols.some((c) => c.name === 'transcription_complete')) {
+    sql.exec(`ALTER TABLE meetings ADD COLUMN transcription_complete INTEGER`);
+  }
 
   // Migration: add summary_language to dbs created before the column existed.
   const cols = sql.prepare(`PRAGMA table_info(guild_config)`).all();
@@ -171,6 +179,29 @@ export function openDb(path) {
     addUtterance({ meetingId, userId, displayName, startMs, endMs, text }) {
       sql.prepare(`INSERT INTO utterances (meeting_id, user_id, display_name, start_ms, end_ms, text)
                    VALUES (?, ?, ?, ?, ?, ?)`).run(meetingId, userId, displayName, startMs, endMs, text);
+    },
+    setTranscriptionComplete(meetingId, complete) {
+      sql.prepare(`UPDATE meetings SET transcription_complete = ? WHERE id = ?`)
+        .run(complete == null ? null : (complete ? 1 : 0), meetingId);
+    },
+    replaceUtterances(meetingId, utterances, { complete }) {
+      const insert = sql.prepare(
+        `INSERT INTO utterances (meeting_id, user_id, display_name, start_ms, end_ms, text)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      sql.exec('BEGIN');
+      try {
+        sql.prepare(`DELETE FROM utterances WHERE meeting_id = ?`).run(meetingId);
+        for (const u of utterances) {
+          insert.run(meetingId, u.userId, u.displayName, u.startMs, u.endMs, u.text);
+        }
+        sql.prepare(`UPDATE meetings SET transcription_complete = ? WHERE id = ?`)
+          .run(complete ? 1 : 0, meetingId);
+        sql.exec('COMMIT');
+      } catch (err) {
+        sql.exec('ROLLBACK');
+        throw err;
+      }
     },
     listUtterances(meetingId) {
       return sql.prepare(`SELECT * FROM utterances WHERE meeting_id = ? ORDER BY start_ms`).all(meetingId);
