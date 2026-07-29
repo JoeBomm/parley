@@ -60,3 +60,18 @@ test('setGuildConfig persists summaryLanguage', () => {
   setGuildConfig(db, 'g', { summaryLanguage: 'de' });
   assert.equal(getGuildConfig(db, 'g').summaryLanguage, 'de');
 });
+
+test('sttProvider defaults to sidecar', () => {
+  const db = openDb(':memory:');
+  assert.equal(getGuildConfig(db, 'g').sttProvider, 'sidecar');
+  assert.equal(getGuildConfig(db, 'g').sttModel, null);
+});
+
+test('setGuildConfig persists sttProvider + sttModel', () => {
+  const db = openDb(':memory:');
+  setGuildConfig(db, 'g', { sttProvider: 'openai', sttModel: 'whisper-1' });
+  const c = getGuildConfig(db, 'g');
+  assert.equal(c.sttProvider, 'openai');
+  assert.equal(c.sttModel, 'whisper-1');
+  assert.equal(c.whisperModel, DEFAULTS.whisperModel); // sidecar model untouched
+});

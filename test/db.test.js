@@ -29,6 +29,44 @@ test('addUtterance + search via FTS', () => {
   assert.equal(hits[0].meeting_id, id);
 });
 
+test('replaceUtterances atomically replaces transcript, completion state, and FTS rows', () => {
+  const db = freshDb();
+  const id = db.createMeeting({ guildId: 'g', channelId: 'c', channelName: 'x', startedAt: 't' });
+  assert.equal(db.getMeeting(id).transcription_complete, null);
+  db.addUtterance({ meetingId: id, userId: 'old', displayName: 'Old', startMs: 0, endMs: 1, text: 'obsolete rocket' });
+
+  db.replaceUtterances(id, [
+    { userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'new transcript' },
+  ], { complete: true });
+
+  assert.equal(db.getMeeting(id).transcription_complete, 1);
+  assert.deepEqual(db.listUtterances(id).map((u) => u.text), ['new transcript']);
+  assert.equal(db.searchUtterances('g', 'obsolete').length, 0);
+  assert.equal(db.searchUtterances('g', 'transcript').length, 1);
+});
+
+test('replaceUtterances rolls back transcript and completion state when an insert fails', () => {
+  const db = freshDb();
+  const id = db.createMeeting({ guildId: 'g', channelId: 'c', channelName: 'x', startedAt: 't' });
+  db.addUtterance({ meetingId: id, userId: 'old', displayName: 'Old', startMs: 0, endMs: 1, text: 'preserve me' });
+  db.setTranscriptionComplete(id, true);
+  db.sql.exec(`
+    CREATE TRIGGER fail_replacement BEFORE INSERT ON utterances
+    WHEN NEW.text = 'explode'
+    BEGIN
+      SELECT RAISE(ROLLBACK, 'forced replacement failure');
+    END;
+  `);
+
+  assert.throws(() => db.replaceUtterances(id, [
+    { userId: 'u1', displayName: 'Alice', startMs: 0, endMs: 1000, text: 'first' },
+    { userId: 'u2', displayName: 'Bob', startMs: 1000, endMs: 2000, text: 'explode' },
+  ], { complete: false }), /forced replacement failure/);
+
+  assert.deepEqual(db.listUtterances(id).map((u) => u.text), ['preserve me']);
+  assert.equal(db.getMeeting(id).transcription_complete, 1);
+});
+
 test('saveSummary + getSummary', () => {
   const db = freshDb();
   const id = db.createMeeting({ guildId: 'g', channelId: 'c', channelName: 'x', startedAt: 't' });
@@ -61,6 +99,16 @@ test('searchUtterances does not throw on FTS operator characters', () => {
   assert.doesNotThrow(() => db.searchUtterances('g', 'rocket OR ('));
   // a normal single-word query still finds the utterance (phrase of one token)
   assert.equal(db.searchUtterances('g', 'rocket').length, 1);
+});
+
+test('openDb creates hot-path indexes on utterances/todos/meetings', () => {
+  const db = freshDb();
+  const names = db.sql.prepare(
+    `SELECT name FROM sqlite_master WHERE type = 'index'`
+  ).all().map((r) => r.name);
+  for (const idx of ['utterances_meeting', 'todos_meeting', 'todos_guild', 'meetings_guild']) {
+    assert.ok(names.includes(idx), `expected index ${idx} to exist`);
+  }
 });
 
 test('getSummary does not leak raw json columns', () => {
