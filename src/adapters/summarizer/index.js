@@ -3,6 +3,7 @@ import { GeminiSummarizer } from './gemini.js';
 import { OllamaSummarizer } from './ollama.js';
 import { OpenAISummarizer } from './openai.js';
 import { OpenCodeSummarizer } from './opencode.js';
+import { OpenRouterSummarizer } from './openrouter.js';
 import { config as envConfig } from '../../config/env.js';
 
 export function getSummarizer(cfg, env = envConfig) {
@@ -12,8 +13,9 @@ export function getSummarizer(cfg, env = envConfig) {
     case 'ollama': return new OllamaSummarizer(cfg.summarizerModel, env.ollama.url);
     case 'openai': return new OpenAISummarizer(cfg.summarizerModel, env.openai.baseUrl, env.openai.apiKey);
     case 'opencode': return new OpenCodeSummarizer(cfg.summarizerModel || 'deepseek-v4-flash', env.opencode.baseUrl, env.opencode.apiKey);
+    case 'openrouter': return new OpenRouterSummarizer(cfg.summarizerModel || 'openai/gpt-4o-mini', env.openrouter.baseUrl, env.openrouter.apiKey);
     default: throw new Error(`Unknown summarizer provider: ${cfg.summarizerProvider}`);
   }
 }
 
-export const SUPPORTED_PROVIDERS = ['gemini', 'ollama', 'openai', 'opencode'];
+export const SUPPORTED_PROVIDERS = ['gemini', 'ollama', 'openai', 'opencode', 'openrouter'];

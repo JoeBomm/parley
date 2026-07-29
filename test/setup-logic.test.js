@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateSetup } from '../src/commands/setup-logic.js';
 
-const env = { gemini: { apiKey: 'g' }, openai: { apiKey: '' }, opencode: { apiKey: '' }, ollama: { url: 'http://x' }, sttUrl: 'http://127.0.0.1:8000' };
+const env = { gemini: { apiKey: 'g' }, openai: { apiKey: '' }, opencode: { apiKey: '' }, openrouter: { apiKey: '' }, ollama: { url: 'http://x' }, sttUrl: 'http://127.0.0.1:8000' };
 
 test('accepts gemini when key present', () => {
   const r = validateSetup({ provider: 'gemini', model: 'gemini-2.5-flash' }, env);
@@ -27,6 +27,19 @@ test('accepts opencode when key present', () => {
   assert.equal(r.ok, true);
   assert.equal(r.patch.summarizerProvider, 'opencode');
   assert.equal(r.patch.summarizerModel, 'gpt-5.5');
+});
+
+test('rejects openrouter when key missing', () => {
+  const r = validateSetup({ provider: 'openrouter', model: 'openai/gpt-4o-mini' }, env);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /OPENROUTER_API_KEY/);
+});
+
+test('accepts openrouter when key present', () => {
+  const r = validateSetup({ provider: 'openrouter', model: 'anthropic/claude-sonnet-5' }, { ...env, openrouter: { apiKey: 'k' } });
+  assert.equal(r.ok, true);
+  assert.equal(r.patch.summarizerProvider, 'openrouter');
+  assert.equal(r.patch.summarizerModel, 'anthropic/claude-sonnet-5');
 });
 
 test('rejects unknown provider', () => {

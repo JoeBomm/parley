@@ -8,6 +8,7 @@ export function providerKeyPresent(provider, env) {
   if (provider === 'gemini') return { ok: !!env.gemini.apiKey, missing: 'GEMINI_API_KEY' };
   if (provider === 'openai') return { ok: !!env.openai.apiKey, missing: 'OPENAI_API_KEY' };
   if (provider === 'opencode') return { ok: !!env.opencode.apiKey, missing: 'OPENCODE_API_KEY' };
+  if (provider === 'openrouter') return { ok: !!env.openrouter.apiKey, missing: 'OPENROUTER_API_KEY' };
   if (provider === 'ollama') return { ok: !!env.ollama.url, missing: 'OLLAMA_URL' };
   return { ok: false, missing: null };
 }
