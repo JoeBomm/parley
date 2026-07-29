@@ -13,13 +13,18 @@ const SUMMARY_LANGS = [['match', 'Match transcription'], ...LANGS.filter(([c]) =
 
 const PROVIDER_DEFAULTS = {
   gemini: 'gemini-2.5-flash', openai: 'gpt-4o-mini', ollama: 'llama3', opencode: 'deepseek-v4-flash',
+  openrouter: 'openai/gpt-4o-mini',
 };
 // Providers whose key is editable from the UI (Ollama is keyless/local).
-const KEYED = { gemini: 'GEMINI_API_KEY', openai: 'OPENAI_API_KEY', opencode: 'OPENCODE_API_KEY' };
+const KEYED = {
+  gemini: 'GEMINI_API_KEY', openai: 'OPENAI_API_KEY', opencode: 'OPENCODE_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+};
 const KEY_HELP = {
   gemini: 'aistudio.google.com/apikey',
   openai: 'platform.openai.com/api-keys',
   opencode: 'opencode.ai/zen',
+  openrouter: 'openrouter.ai/keys',
 };
 // Which env secret each STT provider needs (sidecar is keyless/local).
 const STT_KEY = { openai: 'openai' };
