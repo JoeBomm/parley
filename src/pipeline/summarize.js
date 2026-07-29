@@ -6,9 +6,29 @@ export function formatMs(ms) {
 }
 
 export function buildTranscript(utterances) {
+  
+  // var sorted = [...utterances].sort((a, b) => a.startMs - b.startMs);
+  // var mapped = [...sorted].map((u) => `[${formatMs(u.startMs)}] ${u.displayName}: ${u.text}`);
+  // var joined = [...mapped].join('\n');
+
+  // console.log("utterances:", utterances.length);
+  // console.log("sorted:", sorted.length);
+  // console.log("mapped:", mapped.length);
+  // console.log("joined length:", joined.length);
+
+  // console.log(joined.slice(0, 1000));
+  // console.log("---- END PREVIEW ----");
+  // console.log(joined.slice(-1000));
+
+  // console.log("line count in joined:", joined.split("\n").length);
+
+  // console.log("char count:", joined.length);
+  // console.log("rough tokens:", Math.round(joined.length / 4));
+
   return [...utterances]
     .sort((a, b) => a.startMs - b.startMs)
     .map((u) => `[${formatMs(u.startMs)}] ${u.displayName}: ${u.text}`)
+    // .slice(0, 50)
     .join('\n');
 }
 

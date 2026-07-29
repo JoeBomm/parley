@@ -52,8 +52,13 @@ const summarizer = getSummarizer(cfg);
 let notes;
 try {
   notes = await summarizer.summarize(transcript, meta);
+// } catch (err) {
+//   console.error(`Reprocess failed: ${describeSummarizerError(err, cfg.summarizerProvider)}`);
+//   process.exit(1);
+// }
 } catch (err) {
-  console.error(`Reprocess failed: ${describeSummarizerError(err, cfg.summarizerProvider)}`);
+  console.error(err);
+  console.error("cause:", err.cause);
   process.exit(1);
 }
 const modelUsed = `${cfg.summarizerProvider}:${cfg.summarizerModel || ''}`;
