@@ -3,6 +3,7 @@ import { SUMMARY_PROMPT } from './notes.js';
 import { summaryLanguageInstruction } from './languages.js';
 import { httpError, withRetry } from './errors.js';
 import { config } from '../../config/env.js';
+import { writePromptToFile } from '../../utils/writePromptToFile.js';
 
 // OpenCode Zen Go is an OpenAI-compatible model gateway
 // (https://opencode.ai/zen/go/v1 — /models, /chat/completions), authed with
@@ -15,7 +16,11 @@ export class OpenCodeSummarizer {
     this.model = model; this.baseUrl = baseUrl; this.apiKey = apiKey; this.fetchImpl = fetchImpl;
   }
   async summarize(transcript, meta) {
+    console.log("in opencode summarizer")
     const prompt = `${SUMMARY_PROMPT}${summaryLanguageInstruction(meta.summaryLanguage)}\n\nAttendees: ${(meta.attendees || []).join(', ')}\n\nTranscript:\n${transcript}`;
+
+    writePromptToFile(prompt);
+
     const body = await withRetry(async () => {
       const res = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
